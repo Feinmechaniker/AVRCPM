@@ -1,0 +1,717 @@
+;    CP/M BIOS for avrcpm
+;    Copyright (C) 2010 Sprite_tm
+;
+;    This program is free software: you can redistribute it and/or modify
+;    it under the terms of the GNU General Public License as published by
+;    the Free Software Foundation, either version 3 of the License, or
+;    (at your option) any later version.
+;
+;    This program is distributed in the hope that it will be useful,
+;    but WITHOUT ANY WARRANTY; without even the implied warranty of
+;    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;    GNU General Public License for more details.
+;
+;    You should have received a copy of the GNU General Public License
+;    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+;
+;    $Id$
+;
+
+maclib MEMCFG.LIB
+maclib CFGACPM.LIB
+
+bdos	equ	bdosloc+6	; -MH- direct call to BDOS
+
+cr	equ	0dh
+lf	equ	0ah
+
+	aseg
+	org	100h
+	.phase	biosloc	; -MH-
+	.z80
+
+nsects	equ	($-ccploc)/128		; -MH- warm start sector count
+	
+	jp	boot
+wboote:	
+	jp	wboot
+	jp	const
+	jp	conin
+	jp	conout
+	jp	list
+	jp	punch
+	jp	reader
+	jp	home
+	jp	seldsk
+	jp	settrk
+	jp	setsec
+	jp	setdma
+	jp	read
+	jp	write
+	jp	listst
+	jp	sectran
+	jp	0		;zsdos (?)
+	jp	0		;zsdos (?)
+	jp	0		;zsdos (?)
+	jp	clock		;zsdos compatible clock set/get
+
+
+	.8080
+	maclib AVRCPM.LIB
+
+; SC16IS740 UART enabled in cfgacpm.lib
+IF SC16IS740
+	; I2C UART SC16IS740 for RDR: and PUN:
+	I2C_UART	equ	50h	; virtual port, see AVR file virt_ports.asm
+	I2C_UART_LCR	equ	I2C_UART+03h	; Line Control Register
+	I2C_UART_LSR	equ	I2C_UART+05h	; Line Status Register
+	I2C_UART_THR	equ	I2C_UART+00h	; Transmit Hold Register
+	I2C_UART_RHR	equ	I2C_UART+00h	; Receive Hold Register
+	I2C_UART_DIV_0	equ	I2C_UART+0	; special register 0 for divisor lo
+	I2C_UART_DIV_1	equ	I2C_UART+1	; special register 1 for divisor hi
+	I2C_UART_DEF_0	equ	96	; == 96 for 14.7456 MHz crystal
+	I2C_UART_DEF_1	equ	0	; == 0 for 14.7456 MHz crystal
+	I2C_UART_RXRDY	equ	01h	; data available
+ENDIF
+
+; MCP23017 GPIO enabled in cfgacpm.lib
+IF MCP23017
+	; A[0:7]  DATA 8 bits      => printer
+	; B[0]    BUSY             <= printer
+	; B[1]    READY (not used) <= printer
+	; B[2]    PAPER OUT        <= printer
+	; B[3]    STROBE/          => printer
+	I2C_GPIO	equ	60h	; virtual port, see AVR file virt_ports.asm
+	I2C_GPIO_DIRA	equ	I2C_GPIO+00h	; direction GPIO A
+	I2C_GPIO_DIRB	equ	I2C_GPIO+01h	; direction GPIO B
+	I2C_GPIO_DATA	equ	I2C_GPIO+12h	; data GPIO A
+	I2C_GPIO_DATB	equ	I2C_GPIO+13h	; data GPIO B
+ENDIF
+	
+	;Drive	 A    B    C    D    E F G H I    J    K    L
+;drvtbl:dtbl	<dpha,dphb,dphc,dphd, , , , ,dphi,dphj,dphk,dphl>
+;drvtbl:dtbl	<dpha,    ,    ,    , , , , ,dphi,dphj,dphk,dphl>
+;drvtbl: dtbl	<    ,    ,    ,    , , , , ,dphi,dphj,dphk,dphl>
+drvtbl:dtbl	<    ,    ,    ,    , , , , ,dphi>
+
+	;	Name   spt   bls  dks  dir  cks off
+;	dpb	dpb243, 26, 1024, 243,  64,  64,  2
+;	dpb	dp8192s,32, 4096,2046, 512, 512,  2
+;	dpb	dp8192, 32, 4096,2046,1024,1024,  2
+;	dpb	dpbrd,  32, 1024,  56,  32,   0,  2
+	dpb	rd192,  32, 1024, 192,  32,   0,  0
+;	dpb	rd1016, 32, 2048, 508, 192,   0,  2
+;	dpb	rd1024, 32, 2048, 512, 192,   0,  0
+;	dpb	rd0960, 32, 2048, 480, 192,   0,  0
+
+;dpha:	dph	dpb243
+;dphb:	dph	dpb243
+;dphc:	dph	dpb243
+;dphd:	dph	dpb243
+;dpha:	dph	dp8192s
+;dphb:	dph	dp8192s
+;dphc:	dph	dp8192
+;dphd:	dph	dp8192
+;dphi:	dph	rd1016
+dphi:	dph	rd192
+;dphj:	dph	rd1024
+;dphk:	dph	rd1024
+;dphl:	dph	rd0960
+
+	.z80
+	
+signon:
+	db	cr,lf
+	db	msize/10+'0'
+	db	msize - (msize/10)*10 + '0'	;modulo doesn't work?
+	db	"k cp/m vers 2.2x"
+msgnl:	db	cr,lf,0
+
+msgnodisk:
+	db	"No disk!"
+	db	cr,lf,0
+
+; ----- I/O handlers -----
+const:
+	ld	a,(iobyte)	; get content of IOBYTE
+	call	JumpSel_01	; select via bits [0:1]
+	dw	AVR_UART_in_status	; 00=TTY:
+	dw	I2C_UART_in_status	; 01=CRT:
+	dw	AVR_UART_in_status	; 10=BAT:
+	dw	AVR_UART_in_status	; 11=UC1:
+
+conin:
+	ld	a,(iobyte)	; get content of IOBYTE
+	call	JumpSel_01	; select via bits [0:1]
+	dw	AVR_UART_in	; 00=TTY:
+	dw	I2C_UART_in	; 01=CRT:
+	dw	AVR_UART_in	; 10=BAT:
+	dw	AVR_UART_in	; 11=UC1:
+
+conout:
+	ld	a,(iobyte)	; get content of IOBYTE
+	call	JumpSel_01	; select via bits [0:1]
+	dw	AVR_UART_out	; 00=TTY:
+	dw	I2C_UART_out	; 01=CRT:
+	dw	AVR_UART_out	; 10=BAT:
+	dw	AVR_UART_out	; 11=UC1:
+
+list:
+	ld	a,(iobyte)	; get content of IOBYTE bits [7:8] to [0:1]
+	rlca	; rotate A left (11000000->10000001)
+	rlca	; rotate A left (10000001->00000011)
+	call	JumpSel_01	; select via bits [0:1]
+	dw	AVR_UART_out	; 00=TTY:
+	dw	I2C_UART_out	; 01=CRT:
+	dw	I2C_GPIO_out	; 10=LPT:
+	dw	AVR_UART_out	; 11=UL1:
+
+listst:
+	ld	a,(iobyte)	; get content of IOBYTE bits [7:8] to [0:1]
+	rlca	; rotate A left (11000000->10000001)
+	rlca	; rotate A left (10000001->00000011)
+	call	JumpSel_01	; select via bits [0:1]
+	dw	AVR_UART_out_status	; 00=TTY:
+	dw	I2C_UART_out_status	; 01=CRT:
+	dw	I2C_GPIO_out_status	; 10=LPT:
+	dw	AVR_UART_out_status	; 11=UL1:
+
+punch:
+	ld	a,(iobyte)	; get content of IOBYTE bits [5:4] to [1:2]
+	rrca	; rotate A right (00110000->00011000)
+	rrca	; rotate A right (00011000->00001100)
+	rrca	; rotate A right (00001100->00000110)
+	call	JumpSel_12	; select via bits [1:2]
+	dw	AVR_UART_out	; 00=TTY:
+	dw	I2C_UART_out	; 01=PTP:
+	dw	I2C_GPIO_out	; 10=UP1:
+	dw	AVR_UART_out	; 11=UP1:
+
+reader:
+;	jp	I2C_UART_in	; OLD
+	ld	a,(iobyte)	; get content of IOBYTE bits [5:4] to [1:2]
+	rrca	; rotate A right (00001100->00000110)
+	call	JumpSel_12	; select via bits [1:2]
+	dw	AVR_UART_in	; 00=TTY:
+	dw	I2C_UART_in	; 01=PTR:
+	dw	AVR_UART_in	; 10=UR1:
+	dw	AVR_UART_in	; 11=UR1:
+
+
+; ----- specific handlers
+
+; general, IOBYTE indexed jump table selector
+; CALL to be followed by 4 address words
+JumpSel_01:	; selector in bits [0:1]
+	rlca	; multiply A by 2 for address increment
+JumpSel_12:	; offset is in bits [1:2] of A
+	and	00000110B	; mask bits [1:2] of A
+	EX	(SP),HL	; swap (SP)<->HL, HL = first address after CALL = table base
+	LD	E,A
+	LD	D,0
+	ADD	HL,DE	; add offset to table base
+	LD	A,M	; least significant byte
+	INC	HL	
+	LD	H,M	; most significant byte
+	LD	L,A	; HL = address of routine
+	EX	(SP),HL	; swap (SP)<->HL, TOS now has the routine address
+	RET	; return to selected routine
+
+; ----- AVR UART -----
+
+AVR_UART_in_status:
+	in	a,(UARTCSR)
+	and	UARTRXRDY
+	ret	z	; no data available
+	or	0ffh
+	ret
+
+AVR_UART_out_status:
+	ld	a,0FFh	; always ready for output
+	ret
+
+AVR_UART_in:
+	in	a,(UARTCSR)
+	rra
+	jp	nc,AVR_UART_in
+	in	a,(UARTDR)
+	ret
+
+AVR_UART_out:
+	ld	a,c
+	out	(UARTDR),a
+	ret
+
+; ----- GPIO -----
+
+I2C_GPIO_out:
+IF MCP23017
+	ld	a,c
+	out	(I2C_GPIO_DATA),a	; data to A[0:7]
+	ld	a,0
+	out	(I2C_GPIO_DATB),a	; drop STROBE/ on B[3]
+	; stays low for 300 us, more than the required 0.5 us
+	ld	a,8
+	out	(I2C_GPIO_DATB),a	; rise STROBE/
+GPIO_busy:
+	in	a,(I2C_GPIO_DATB)
+	bit	0,a	; test bit 0
+	jp	nz,GPIO_busy	; wait while B[0] = 1
+ELSE
+	jp	AVR_UART_OUT	; only one device
+ENDIF
+	ret
+
+I2C_GPIO_out_status:
+IF MCP23017
+	; B[0]    BUSY             <= printer, 1=busy
+	; B[1]    READY (not used) <= printer
+	; B[2]    PAPER OUT        <= printer, 1=OOP
+	; B[3]    STROBE/          => printer
+	in	a,(I2C_GPIO_DATB)	; TODO: fail if BUSY from B[0] or PAPER from B[2]
+	and	0000101B	; mask B[0,2]
+	jp	z,I2C_GPIO_RDY
+	ld	a,0	; not ready for output
+	ret
+ENDIF
+I2C_GPIO_RDY:
+	ld	a,0FFh	; ready for output
+	ret
+
+; ----- I2C UART -----
+
+I2C_UART_in_status:
+IF SC16IS740
+	in	a,(I2C_UART_LSR)
+	and	I2C_UART_RXRDY
+	ret	z	; no data available
+	or	0ffh
+ELSE
+	ld	a,0	; no data available
+ENDIF
+	ret
+
+I2C_UART_out_status:
+	ld	a,0ffh	; always ready
+	ret
+
+I2C_UART_out:
+IF SC16IS740
+	; uses I2C UART SC16IS740 for RDR: and PUN:
+	in	a,(I2C_UART_LSR)
+	bit	5,a
+	jp	z,I2C_UART_out	; repeat until LSR[5]==1: THR is empty
+	ld	a,c
+	out (I2C_UART_THR),a
+ENDIF
+	ret
+
+I2C_UART_in:
+IF SC16IS740
+	; uses I2C UART SC16IS740 for RDR: and PUN:
+	in	a,(I2C_UART_LSR)
+	bit	0,a
+	jp z,I2C_UART_in	; repeat until LSR[0]==1: data available
+	in	a,(I2C_UART_RHR)
+ELSE
+	ld	a,1Ah	; CTRL-Z = End Of File
+ENDIF
+	ret
+
+; ----- setup routines ----
+
+IF SC16IS740
+setup_I2C_UART:
+	; default settings for I2C UART SC16IS740 for RDR: and PUN:
+	; set divisor for baud rate
+	ld	a,128
+	out (I2C_UART_LCR),a	; unlock special registers
+	ld	a,I2C_UART_DEF_0	; calculated above
+	out (I2C_UART_DIV_0),a	; for 9600 baud
+	ld	a,I2C_UART_DEF_1
+	out (I2C_UART_DIV_1),a	;
+	out (I2C_UART_LCR),a	; lock special registers
+	; no parity, 8 data bits, 1 stop bit
+	ld	a,3
+	out	(I2C_UART_LCR),a	;
+	ret
+ENDIF
+
+IF MCP23017
+setup_I2C_GPIO:
+	; default settings for I2C GPIO MCP23017 for LST:
+	ld	a,0
+	out (I2C_GPIO_DIRA),a	; GPIO A: [0:7]=output (DATA)
+	out	(I2C_GPIO_DATA),a	; ZERO data to A[0:7]
+	; GPIO B: [0:2]=input  (BUSY,ACK/,PAPER)
+	;         [3:7]=output (STROBE)
+	ld	a,7
+	out (I2C_GPIO_DIRB),a
+	ld	a,8
+	out	(I2C_GPIO_DATB),a	; B[3] = STROBE/ = HIGH
+	ret
+ENDIF
+
+; -----
+
+prmsg:
+	ld	a,(hl)
+	or	a
+	ret	z
+	push	hl
+	ld	c,a
+	call	conout
+	pop	hl
+	inc	hl
+	jp	prmsg
+	
+prhex:
+	ld	a,c
+	push	af
+	rra	
+	rra	
+	rra	
+	rra	
+	call	prhexdigit
+	pop	af
+	;	fall thru
+
+prhexdigit:
+	and	00fh
+	cp	10
+	jp	c,prd1
+	add	a,7
+prd1:
+	add	a,'0'
+	ld	c,a
+	jp	conout
+
+boot:
+	ld	sp,buff
+	ld	hl,signon
+	call	prmsg
+	
+	ld	a,low bcb
+	out	(13),a
+	ld	a, high bcb
+	out	(14),a
+
+	xor	a
+	ld	(bootdsk),a
+	ld	e,a
+	ld	c,a
+	call	seldsk
+	jp	nz,boot0
+	ld	hl,msgnodisk
+	call	prmsg
+	halt
+
+boot0:
+	call	getdpb
+	ld	a,(de)			;dpb[0] is sectors_per_track
+	ld	(bootspt),a
+	ld	e,0
+	ld	c,'I'-'A'
+	call	seldsk
+	jp	z,boot1		;no ram disk
+
+	call	getdpb		;de = dpb of first ram disk
+	
+; Check, if we have reserved tracks.
+
+	ld	hl,13
+	add	hl,de
+
+	ld	a,(hl)		;# of reserved tracks
+	inc	hl
+	or	(hl)
+	jp	z,boot1		;Skip if not.
+
+; Save CPM to ram disk.
+
+	ld	a,(de)		;sectors per track
+	ld	(bootspt),a
+	ld	a,'I'-'A'
+	ld	(bootdsk),a
+	call	home
+	ld	b,nsects
+	ld	c,0		;track
+	ld	d,1		;sektor (0 based, skip ipl)
+	ld	hl,ccploc	; -MH-
+store1:
+	push	bc
+	push	de
+	push	hl
+	ld	c,d
+	ld	b,0
+	call	setsec
+	pop	bc		;dma
+	push	bc
+	call	setdma
+	ld	c,0
+	call	write
+	
+	pop	hl		;dma
+	ld	de,128
+	add	hl,de
+	pop	de		;d = sec
+	pop	bc		;b = # of secs, c = track
+	dec	b
+	jp	z,boot1
+	
+	inc	d
+	ld	a,(bootspt)
+	dec	a
+	cp	d		;if sector >= spt then change tracks
+	jp	nc,store1
+	
+	ld	d,0
+	inc	c
+	push	bc
+	push	de
+	push	hl
+	ld	b,0
+	call	settrk	
+	pop	hl
+	pop	de
+	pop	bc
+	jp	store1
+
+boot1:	
+IF SC16IS740
+	call	setup_I2C_UART	; setup I2C UART (if any)
+ENDIF
+IF MCP23017
+	call	setup_I2C_GPIO	; setup I2C GPIO (if any)
+ENDIF
+	ld	a,10010100B	; IOBYTE: GPIO-I2CUART-I2CUART-AVRUART
+	ld	(iobyte),a
+	xor	a
+	ld	(cdisk),a
+	jp	gocpm
+
+wboot:	;re-load CP/M
+	ld	sp,buff
+	ld	a,1 shl BOOT_FUNC	;init (de)blocking
+	out	(22),a
+	ld	a,(bootdsk)
+	ld	c,a
+	ld	e,0		;clear reselection flag
+	call	seldsk
+	call	home
+	ld	b,nsects
+	ld	c,0		;track
+	ld	d,1		;sektor (0 based)
+	ld	hl,ccploc	; -MH-
+load1:
+	push	bc
+	push	de
+	push	hl
+	ld	c,d
+	ld	b,0
+	call	setsec
+	pop	bc
+	push	bc
+	call	setdma
+	call	read
+	cp	0		;read error?
+	jp	nz,wboot
+	
+	pop	hl
+	ld	de,128
+	add	hl,de
+	pop	de
+	pop	bc
+	dec	b
+	jp	z,gocpm
+	
+	inc	d
+	ld	a,(bootspt)
+	dec	a
+	cp	d		;if sector >= spt then change tracks
+	jp	nc,load1
+	
+	ld	d,0
+	inc	c
+	push	bc
+	push	de
+	push	hl
+	ld	b,0
+	call	settrk	
+	pop	hl
+	pop	de
+	pop	bc
+	jp	load1
+	
+gocpm:
+	ld	a,0c3h
+	ld	(0),a
+	ld	hl,wboote
+	ld	(1),hl
+	ld	(5),a
+	ld	hl,bdos
+	ld	(6),hl
+		
+	ld	bc,buff
+	call	setdma
+	ld	a,(cdisk)
+	ld	c,a
+	jp	ccploc	; -MH-
+	
+msgSel:	db	13,10,"Sel: ",0
+
+getdpb:
+	ld	de,10
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)		;de = dpb
+	ret
+	
+seldsk:
+	ld	a,c
+	out	(15),a
+
+	ld	a,e		;reselection bit
+	rrca
+	jp	c,getdph	;skip, if disk already active
+	ld	hl,0
+	in	a,(15)		;querry, if disk exists
+	or	a
+	ret	z
+getdph:
+	ld	hl,drvtbl
+	ld	b,0
+	add	hl,bc
+	add	hl,bc
+	ld	a,(hl)		;get table entry for selected disk
+	inc	hl
+	ld	h,(hl)
+	ld	l,a		
+	or	h		;return zero, if no entry (no disk)
+	ret
+	
+
+home:
+	ld	a,1 shl HOME_FUNC
+	out	(22),a
+	
+	ld	bc,0		; same as seek to track 0
+settrk:
+	ld	a,c
+	out	(16),a
+	ld	a,b
+	out	(17),a
+	ret
+
+setsec:
+	ld	a,c
+	out	(18),a
+	ret
+
+setdma:
+	ld	a,c
+	out	(20),a
+	ld	a,b
+	out	(21),a
+	ret
+
+read:
+	ld	a,1 shl READ_FUNC
+	out	(22),a
+	in	a,(22)
+	and	1
+	ret
+
+write:
+	ld	a,c
+	and	3		;mask write type
+	or	1 shl WRITE_FUNC
+	out	(22),a
+	in	a,(22)
+	and	1
+	ret
+
+sectran:
+	;translate sector bc using table at de, res into hl
+	ld	h,b
+	ld	l,c
+	ld	a,d
+	or	e
+	ret	z
+	ex	de,hl
+	add	hl,bc
+	ld	l,(hl)
+	ld	h,0
+	ret
+
+;------------------------------------------------------------------------
+; ZSDOS clock drivers may use registers BC and D without restoring  them, 
+; but must preserve the Z80's alternate and index registers.  
+; Other registers must be used exactly as follows:
+;
+;   Enter:     C = 00H to Read the Clock, 01H to Set the Clock
+;             DE = Address of a 6-byte field to Receive or from which 
+;                  to Set time in DateStamper format (BCD digits as: 
+;                  YY MM DD HH MM SS).  24-hour operation is assumed.
+;
+;   Exit :     A = 01H for a successful operation,
+;                  0FFH for a failure of any sort (Can't set, etc.)
+;
+;            When Reading the Clock:
+;              E = Original contents of Entry value of DE plus 5
+;             HL = Entry value of DE plus 5 (Seconds field)
+
+clock:
+	dec	c
+	jr	z,clk_set
+	inc	c
+	ret	nz
+
+clk_get:
+	ld	hl,5
+	add	hl,de
+	push	hl
+	ld	bc,6*256 + CLOCKPORT-1
+	ld	e,(hl)
+clk_gl:
+	inc	c
+	ind
+	jr	nz,clk_gl
+	pop	hl
+	jr	clk_e
+
+
+clk_set:
+	ld	a,(hl)
+	cp	78h
+	ld	a,19h
+	jr	nc,clk_s1
+	ld	a,20h
+clk_s1:
+	out	(CLOCKPORT+6),a
+	ld	bc,6*256 + CLOCKPORT+6
+clk_sl:
+	dec	c
+	outi
+	jr	nz,clk_sl
+	dec	hl
+clk_e:
+	ld	a,1
+	ret
+
+;------------------------------------------------------------------------
+
+bcb:	dw	drvtbl
+	dw	dirbuf
+	dw	enddat
+	
+bootdsk:ds	1
+bootspt:ds	1
+
+	.8080
+	endef
+
+	end
+
+                                                                                                    
