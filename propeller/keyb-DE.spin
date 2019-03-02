@@ -1,1021 +1,560 @@
-''***************************************
-''*  PS/2 Keyboard Driver v1.0.1        *
-''*  Author: Chip Gracey                *
-''*  Copyright (c) 2004 Parallax, Inc.  *
-''*  See end of file for terms of use.  *
-''***************************************
+PUB get_fontptr(fontnum)
 
-{-----------------REVISION HISTORY---------------------------------
- v1.0.1 - Updated 6/15/2006 to work with Propeller Tool 0.96
- ------------------------------------------------------------------}
-
-{-----------------KEYBOARD LAYOUT HISTORY--------------------------
- 2009-08-31 (Y-M-D)
-  Patch for german keyboard layout
-  Author: oog
-  Added german keyboard layout.
-  Original layout is commented as keyboard-us-en (US-English).
-  German layout is commented as keyboard-de (de = deutsch = "german").
-
-  Now there are two tables for keys with and without SHIFT-Key.
-  It should be easier to implement different international layouts.
-  However, it's bigger now and uses more memory.
-
- 2009-09-05 (Y-M-D)
-  Fixed bugs
-  - code bug on home-key fixed
-    new replace-codes for de_ae, de_ou and de_ue
-
-  New
-  - Documentation of control-key bits
-    This should be helpful for translations of this driver into
-    different languages.
-  - table_alt_r
-    This table contains characters for the german "AltGr" key.
-  - AltGr+F1..F12
-    Returns line-characters, selected from $90..$9f
-
- 2009-09-06 (Y-M-D)
-  Fixed bugs
-  - patch table_shift for "?"
-
-  Differences to Parallax driver:
-  - Different codes for NumLock, CapsLock and ScrLock to avoid
-    conflict with german "ß"
-    Codes are defined as constants and easy to change
-  - Easy Cursor codes implemented to avoit conflict with the "Ä"-key
-    Easy Cursor codes are easy to understand,
-    for example "Cursor Left" is the character "←"
-
- 2011-11-02 (Y-M-D)
-  Fixed bugs
-  - patch table_shift for "§" from $14 to $A7
-
- ------------------------------------------------------------------}
-
-con
-  de_ae = $A6   'replace code - not used on keyboard
-  de_oe = $A7   'replace code - not used on keyboard
-  de_ue = $A8   'replace code - not used on keyboard
-  lock  = $BC   'Parallax used codes $DD, $DE and $DF
-                'There was a conflict between $DF=NumLock="ß"
-  ScrLk = lock
-  CpsLk = lock+1
-  NumLk = lock+2
-
-'
-'Uncomment one of the next constant blocks
-'
-'
-
-
-{{Easy cursor codes start for AVR CP/M Joe G. 2013}}
-
-
-' CrsLt = $02E4   '←
-' CrsRt = $03E6   '→
-' CrsUp = $04E8   '↑
-' CrsDn = $05E2   '↓
-  CrsLt = $C0E4   '←
-  CrsRt = $C1E6   '→
-  CrsUp = $C2E8   '↑
-  CrsDn = $C3E2   '↓
-  CrsHm = $06E7   '◀
-  CrsEn = $07E1   '▶
-  PgUp  = $A0E9   '
-  PgDn  = $A2E3   '
-  Bksp  = $00C8   'È
-  Del   = $BAEA   '
-  Ins   = $BBE0   '
-  Esc   = $001B   '
-  Apps  = $CC00   'Ì
-  Power = $CD00   'Í
-  Sleep = $CE00   'Î
-  WkUp  = $CF00   'Ï
-
-{{Easy cursor codes end}}
-
-VAR
-
-  long  cog
-
-  long  par_tail        'key buffer tail        read/write      (19 contiguous longs)
-  long  par_head        'key buffer head        read-only
-  long  par_present     'keyboard present       read-only
-  long  par_states[8]   'key states (256 bits)  read-only
-  long  par_keys[8]     'key buffer (16 words)  read-only       (also used to pass initial parameters)
-
-
-PUB start(dpin, cpin) : okay
-
-'' Start keyboard driver - starts a cog
-'' returns false if no cog available
-''
-''   dpin  = data signal on PS/2 jack
-''   cpin  = clock signal on PS/2 jack
-''
-''     use 100-ohm resistors between pins and jack
-''     use 10K-ohm resistors to pull jack-side signals to VDD
-''     connect jack-power to 5V, jack-gnd to VSS
-''
-'' all lock-keys will be enabled, NumLock will be initially 'on',
-'' and auto-repeat will be set to 15cps with a delay of .5s
-
-  okay := startx(dpin, cpin, %0_000_000, %01_01000)
-
-
-PUB startx(dpin, cpin, locks, auto) : okay
-
-'' Like start, but allows you to specify lock settings and auto-repeat
-''
-''   locks = lock setup
-''           bit 6 disallows shift-alphas (case set soley by CapsLock)
-''           bits 5..3 disallow toggle of NumLock/CapsLock/ScrollLock state
-''           bits 2..0 specify initial state of NumLock/CapsLock/ScrollLock
-''           (eg. %0_001_100 = disallow ScrollLock, NumLock initially 'on')
-''
-''   auto  = auto-repeat setup
-''           bits 6..5 specify delay (0=.25s, 1=.5s, 2=.75s, 3=1s)
-''           bits 4..0 specify repeat rate (0=30cps..31=2cps)
-''           (eg %01_00000 = .5s delay, 30cps repeat)
-
-  stop
-  longmove(@par_keys, @dpin, 4)
-  okay := cog := cognew(@entry, @par_tail) + 1
-
-
-PUB stop
-
-'' Stop keyboard driver - frees a cog
-
-  if cog
-    cogstop(cog~ -  1)
-  longfill(@par_tail, 0, 19)
-
-
-PUB present : truefalse
-
-'' Check if keyboard present - valid ~2s after start
-'' returns t|f
-
-  truefalse := -par_present
-
-
-PUB key : keycode
-
-'' Get key (never waits)
-'' returns key (0 if buffer empty)
-
-  if par_tail <> par_head
-    keycode := par_keys.word[par_tail]
-    par_tail := ++par_tail & $F
-
-
-PUB getkey : keycode
-
-'' Get next key (may wait for keypress)
-'' returns key
-
-  repeat until (keycode := key)
-
-
-PUB newkey : keycode
-
-'' Clear buffer and get new key (always waits for keypress)
-'' returns key
-
-  par_tail := par_head
-  keycode := getkey
-
-
-PUB gotkey : truefalse
-
-'' Check if any key in buffer
-'' returns t|f
-
-  truefalse := par_tail <> par_head
-
-
-PUB clearkeys
-
-'' Clear key buffer
-
-  par_tail := par_head
-
-
-PUB keystate(k) : state
-
-'' Get the state of a particular key
-'' returns t|f
-
-  state := -(par_states[k >> 5] >> k & 1)
+  case fontnum
+    1:
+      result := @font1
+    2:
+      result := @font2
+    other:
+      result := @font0
 
 
 DAT
+{
+font0  long
+'part 0   --> 0
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 0   --> 1
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 1  --> 2
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 1    --> 3
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
+  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
+  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
+  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
+  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
+  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
+  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
+  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
+  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
+  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
+  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
+  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
+  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
+  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+}
+font0  long
+'part 0   --> 0
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
 
-'******************************************
-'* Assembly language PS/2 keyboard driver *
-'******************************************
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
 
-                        org
+'part 0   --> 1
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+
+'part 1  --> 2
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
+
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
+
+'part 1    --> 3
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
+  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
+  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
+  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
+  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
+  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
+  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
+  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
+  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
+  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
+  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
+  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
+  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
+  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
+
+  long $FF000000,$FF000000,$FF000000,$FF000000,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f
+  long $FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFffffff,$FFffffff,$FFffffff,$FFffffff
+  long $FF007e7e,$FF007e7e,$FF001818,$FF001818,$FF181818,$FF181818,$FF000000,$FF000000
+  long $FF181818,$FF000000,$FF181818,$FF181818,$FF000000,$FF181818,$FF181818,$FFaa5555
+  long $FF000000,$FF001818,$FF000000,$FF006666,$FF001818,$FF006262,$FF00dcdc,$FF000000
+  long $FF301818,$FF0c1818,$FF000000,$FF000000,$FF0c1818,$FF000000,$FF001818,$FF000202
+  long $FF003c3c,$FF007e7e,$FF007e7e,$FF003c3c,$FF003030,$FF003c3c,$FF003c3c,$FF000c0c
+  long $FF003c3c,$FF001c1c,$FF001818,$FF0c1818,$FF006060,$FF000000,$FF000606,$FF001818
+  long $FF007c7c,$FF006666,$FF003e3e,$FF003c3c,$FF001e1e,$FF007e7e,$FF000606,$FF007c7c
+  long $FF006666,$FF007e7e,$FF003c3c,$FF006666,$FF007e7e,$FF00c6c6,$FF006666,$FF003c3c
+  long $FF000606,$FF006c6c,$FF006666,$FF003c3c,$FF001818,$FF007e7e,$FF001818,$FF00c6c6
+  long $FF006666,$FF001818,$FF007e7e,$FF3c0c0c,$FF006060,$FF3c3030,$FF000000,$FFff0000
+  long $FF000000,$FF007c7c,$FF003e3e,$FF003c3c,$FF007c7c,$FF003c3c,$FF001818,$FF3e6060
+  long $FF006666,$FF003c3c,$FF3c6060,$FF006666,$FF003c3c,$FF00c6c6,$FF006666,$FF003c3c
+  long $FF060606,$FF606060,$FF000606,$FF003e3e,$FF007070,$FF007c7c,$FF001818,$FF006c6c
+  long $FF006666,$FF1e3030,$FF007e7e,$FF003030,$FF001818,$FF000c0c,$FF000000,$FF002a2a
+
+' 8 x 16 font - characters 0..256
 '
-'
-' Entry
-'
-entry                  movd    :par,#_dpin             'load input parameters _dpin/_cpin/_locks/_auto
-                        mov     x,par
-                        add     x,#11*4
-                        mov     y,#4
-:par                    rdlong  0,x
-                        add     :par,dlsb
-                        add     x,#4
-                        djnz    y,#:par
-
-                        mov     dmask,#1                'set pin masks
-                        shl     dmask,_dpin
-                        mov     cmask,#1
-                        shl     cmask,_cpin
-
-                        test    _dpin,#$20      wc      'modify port registers within code
-                        muxc    _d1,dlsb
-                        muxc    _d2,dlsb
-                        muxc    _d3,#1
-                        muxc    _d4,#1
-                        test    _cpin,#$20      wc
-                        muxc    _c1,dlsb
-                        muxc    _c2,dlsb
-                        muxc    _c3,#1
-
-                        mov     _head,#0                'reset output parameter _head
-'
-'
-' Reset keyboard
-'
-reset                   mov     dira,#0                 'reset directions
-                        mov     dirb,#0
-
-                        movd    :par,#_present          'reset output parameters _present/_states[8]
-                        mov     x,#1+8
-:par                    mov     0,#0
-                        add     :par,dlsb
-                        djnz    x,#:par
-
-                        mov     stat,#8                 'set reset flag
-'
-'
-' Update parameters
-'
-update                  movd    :par,#_head             'update output parameters _head/_present/_states[8]
-                        mov     x,par
-                        add     x,#1*4
-                        mov     y,#1+1+8
-:par                    wrlong  0,x
-                        add     :par,dlsb
-                        add     x,#4
-                        djnz    y,#:par
-
-                        test    stat,#8         wc      'if reset flag, transmit reset command
-        if_c            mov     data,#$FF
-        if_c            call    #transmit
-'
-'
-' Get scancode
-'
-newcode                 mov     stat,#0                 'reset state
-
-:same                   call    #receive                'receive byte from keyboard in data
-'*******************************************************************************
-'                        mov     vscl, base
-'                        add     vscl, indx
-'                        wrbyte  data, vscl
-'                        add     indx, #1                ' next location
-'                        and     indx, #$3F              ' limit to 0..32
-'*******************************************************************************
-
-                        cmp     data,#$83+1     wc      'if scancode? C flag is set if data < $83+1
-
-        if_nc           cmp     data,#$AA       wz      'if powerup/reset? Z flag ist set if data equal $AA
-        if_nc_and_z     jmp     #configure              'configure
-
-        if_nc           cmp     data,#$E0       wz      'if extended scancode?
-        if_nc_and_z     or      stat,#1                 'then stat=1
-        if_nc_and_z     jmp     #:same                  'next code for $E0
-
-        if_nc           cmp     data,#$F0       wz      'if released? (Breakcode)
-        if_nc_and_z     or      stat,#2                 'then stat=2
-        if_nc_and_z     jmp     #:same                  'next code
-
-        if_nc           jmp     #newcode                'unknown, ignore, go to start
-'
-'
-' Translate scancode and enter into buffer              'data < $83+1 (valid scancode)
-'
-                        test    stat,#1         wc      'lookup code with extended flag (first code ist $E0)
-                        rcl     data,#1
-                        mov     data_s,data             'keyboard-de: store scancode for next table lookup with shift
-                        call    #look                   'look ASCII-Code
-
-                        cmp     data,#0         wz      'if code unknown, ignore
-        if_z            jmp     #newcode                'go to start
-
-                        mov     t,_states+6             'remember lock keys in _states
-
-                        mov     x,data                  'set/clear key bit in _states
-                        shr     x,#5
-                        add     x,#_states
-                        movd    :reg,x
-                        mov     y,#1
-                        shl     y,data
-                        test    stat,#2         wc
-:reg                    muxnc   0,y
-
-        if_nc           cmpsub  data,#$F0       wc      'if released or shift/ctrl/alt/win, done
-        if_c            jmp     #update
-
-                        mov     y,_states+7             'get shift/ctrl/alt/win bit pairs
-                        shr     y,#16
-
-                        cmpsub  data,#$E0       wc      'translate keypad, considering numlock
-        if_c            test    _locks,#%100    wz
-        if_c_and_z      add     data,#@keypad1-@table
-        if_c_and_nz     add     data,#@keypad2-@table
-        if_c            call    #look
-        if_c            jmp     #:flags
-
-                        'for keyboard-de changed #$DD to #lock
-                        'in next code segment
-
-                        cmpsub  data,#lock      wc      'handle scrlock/capslock/numlock
-        if_c            mov     x,#%001_000
-        if_c            shl     x,data
-        if_c            andn    x,_locks
-        if_c            shr     x,#3
-        if_c            shr     t,#29                   'ignore auto-repeat
-        if_c            andn    x,t             wz
-        if_c            xor     _locks,x
-        if_c            add     data,#lock
-        if_c_and_nz     or      stat,#4                 'if change, set configure flag to update leds
-
-
-{{ for keyboard-de start }}
-
-                        cmp     data,#de_ae     wz      'replace ae
-        if_z            mov     data,#$E4
-                        cmp     data,#de_oe     wz      'replace oe
-        if_z            mov     data,#$F6
-                        cmp     data,#de_ue     wz      'replace ue
-        if_z            mov     data,#$FC
-
-'
-'Documentation of control-key bits
-'
-'                       test    y,#%00000011    wz      'get SHIFT  into nz
-'                       test    y,#%00000100    wz      'get CTRL-L into nz
-'                       test    y,#%00001000    wz      'get CTRL-R into nz
-'                       test    y,#%00010000    wz      'get ALT-L  into nz
-'                       test    y,#%00100000    wz      'get ALT-R  into nz
-'                       test    y,#%01000000    wz      'get WIN-L  into nz
-'                       test    y,#%10000000    wz      'get WIN-R into nz
-
-
-'
-'Translate scan-codes with characters from "table_shift"
-'
-
-                        test    y,#%00000011    wz      'get shift into nz
-                        test    _locks,#$40     wc
-        if_nz_and_nc    mov     data,data_s             'reload scancode
-        if_nz_and_nc    call    #look_shift             'translate by table_shift
-
-'
-'Translate scan-codes with characters from "table_alt_r"
-'
-
-                        test    y,#%00100000    wz      'get ALT-R (AltGr) into nz
-        if_nz           mov     data,data_s             'reload scancode
-        if_nz           call    #look_alt_r             'translate by table_alt_r
-
-
-{{ for keyboard-de end }}
-
-
-:flags                  ror     data,#8                 'add shift/ctrl/alt/win flags
-                        mov     x,#4                    '+$100 if shift
-:loop                   test    y,#%11          wz      '+$200 if ctrl
-                        shr     y,#2                    '+$400 if alt
-        if_nz           or      data,#1                 '+$800 if win
-                        ror     data,#1
-                        djnz    x,#:loop
-                        rol     data,#12
-
-                        rdlong  x,par                   'if room in buffer and key valid, enter
-                        sub     x,#1
-                        and     x,#$F
-                        cmp     x,_head         wz
-        if_nz           test    data,#$FF       wz
-        if_nz           mov     x,par
-        if_nz           add     x,#11*4
-        if_nz           add     x,_head
-        if_nz           add     x,_head
-        if_nz           wrword  data,x
-        if_nz           add     _head,#1
-        if_nz           and     _head,#$F
-
-                        test    stat,#4         wc      'if not configure flag, done
-        if_nc           jmp     #update                 'else configure to update leds
-'
-'
-' Configure keyboard
-'
-configure               mov     data,#$F3               'set keyboard auto-repeat
-                        call    #transmit
-                        mov     data,_auto
-                        and     data,#%11_11111
-                        call    #transmit
-
-                        mov     data,#$ED               'set keyboard lock-leds
-                        call    #transmit
-                        mov     data,_locks
-                        rev     data,#-3 & $1F
-                        test    data,#%100      wc
-                        rcl     data,#1
-                        and     data,#%111
-                        call    #transmit
-
-                        mov     x,_locks                'insert locks into _states
-                        and     x,#%111
-                        shl     _states+7,#3
-                        or      _states+7,x
-                        ror     _states+7,#3
-
-                        mov     _present,#1             'set _present
-
-                        jmp     #update                 'done
-
-{{ for keyboard-de start }}
-'
-' Lookup byte in table_shift
-'
-look_shift              ror     data,#2                 'perform lookup
-                        movs    :reg,data
-                        add     :reg,#table_shift
-                        shr     data,#27
-                        mov     x,data
-:reg                    mov     data,0
-                        shr     data,x
-                        and     data,#$FF               'isolate byte
-look_shift_ret          ret
-
-'
-' Lookup byte in table_alt_r
-'
-look_alt_r              ror     data,#2                 'perform lookup
-                        movs    :reg,data
-                        add     :reg,#table_alt_r
-                        shr     data,#27
-                        mov     x,data
-:reg                    mov     data,0
-                        shr     data,x
-                        and     data,#$FF               'isolate byte
-look_alt_r_ret          ret
-
-{{ for keyboard-de end }}
-
-'
-'
-' Lookup byte in table
-'
-look                    ror     data,#2                 'perform lookup
-                        movs    :reg,data
-                        add     :reg,#table
-                        shr     data,#27
-                        mov     x,data
-:reg                    mov     data,0
-                        shr     data,x
-
-                        jmp     #rand                   'isolate byte
-'
-'
-' Transmit byte to keyboard
-'
-transmit
-_c1                     or      dira,cmask              'pull clock low
-                        movs    napshr,#13              'hold clock for ~128us (must be >100us)
-                        call    #nap
-_d1                     or      dira,dmask              'pull data low
-                        movs    napshr,#18              'hold data for ~4us
-                        call    #nap
-_c2                     xor     dira,cmask              'release clock
-
-                        test    data,#$0FF      wc      'append parity and stop bits to byte
-                        muxnc   data,#$100
-                        or      data,dlsb
-
-                        mov     x,#10                   'ready 10 bits
-transmit_bit            call    #wait_c0                'wait until clock low
-                        shr     data,#1         wc      'output data bit
-_d2                     muxnc   dira,dmask
-                        mov     wcond,c1                'wait until clock high
-                        call    #wait
-                        djnz    x,#transmit_bit         'another bit?
-
-                        mov     wcond,c0d0              'wait until clock and data low
-                        call    #wait
-                        mov     wcond,c1d1              'wait until clock and data high
-                        call    #wait
-
-                        call    #receive_ack            'receive ack byte with timed wait
-                        cmp     data,#$FA       wz      'if ack error, reset keyboard
-        if_nz           jmp     #reset
-
-transmit_ret            ret
-'
-'
-' Receive byte from keyboard
-'
-receive                 test    _cpin,#$20      wc      'wait indefinitely for initial clock low
-                        waitpne cmask,cmask
-receive_ack
-                        mov     x,#11                   'ready 11 bits
-receive_bit             call    #wait_c0                'wait until clock low
-                        movs    napshr,#16              'pause ~16us
-                        call    #nap
-_d3                     test    dmask,ina       wc      'input data bit
-                        rcr     data,#1
-                        mov     wcond,c1                'wait until clock high
-                        call    #wait
-                        djnz    x,#receive_bit          'another bit?
-
-                        shr     data,#22                'align byte
-                        test    data,#$1FF      wc      'if parity error, reset keyboard
-        if_nc           jmp     #reset
-rand                    and     data,#$FF               'isolate byte
-
-look_ret
-receive_ack_ret
-receive_ret             ret
-'
-'
-' Wait for clock/data to be in required state(s)
-'
-wait_c0                 mov     wcond,c0                '(wait until clock low)
-
-wait                    mov     y,tenms                 'set timeout to 10ms
-
-wloop                   movs    napshr,#18              'nap ~4us
-                        call    #nap
-_c3                     test    cmask,ina       wc      'check required state(s)
-_d4                     test    dmask,ina       wz      'loop until got state(s) or timeout
-wcond   if_never        djnz    y,#wloop                '(replaced with c0/c1/c0d0/c1d1)
-
-                        tjz     y,#reset                'if timeout, reset keyboard
-wait_ret
-wait_c0_ret             ret
-
-
-c0      if_c            djnz    y,#wloop                '(if_never replacements)
-c1      if_nc           djnz    y,#wloop
-c0d0    if_c_or_nz      djnz    y,#wloop
-c1d1    if_nc_or_z      djnz    y,#wloop
-'
-'
-' Nap
-'
-nap                     rdlong  t,#0                    'get clkfreq
-napshr                  shr     t,#18/16/13             'shr scales time
-                        min     t,#3                    'ensure waitcnt won't snag
-                        add     t,cnt                   'add cnt to time
-                        waitcnt t,#0                    'wait until time elapses (nap)
-
-nap_ret                 ret
-'
-'
-' Initialized data
-'
-'
-dlsb                    long    1 << 9
-tenms                   long    10_000 / 4
-'*******************************************************************************
-'base                    long    $7FC0
-'indx                    long    0
-'*******************************************************************************
-'
-'
-' Lookup table
-'                               ascii   scan    extkey  regkey  ()=keypad
-'
-
-{{keyboard-de start}}
-
-table
-                        '
-                        '$00  ---   F9    ---   F5    F3    F1    F2    F12
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$00D8,$0000,$00D4,$00D2,$00D0,$00D1,$00DB
-
-                        '
-                        '$08  ---   F10   F8    F6    F4    TAB   _^_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$00D9,$00D7,$00D5,$00D3,$0009,$005E,$0000
-
-                        '          ALT-R Left        CTRL-R
-                        '$10  ---  ALT-L SHIFT  ---  CTRL_L  q    1   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$F5F4,$00F0,$0000,$F3F2,$0071,$0031,$0000
-
-                        '                                              WIN-L
-                        '$18  ---   ---   _y_    s     a     w     2    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0079,$0073,$0061,$0077,$0032,$F600
-
-                        '                                              WIN-R
-                        '$20  ---    c     x     d     e     4     3    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0063,$0078,$0064,$0065,$0034,$0033,$F700
-
-                        '                                              Apps
-                        '$28  ---   Spc    v     f     t     r     5    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0020,$0076,$0066,$0074,$0072,$0035,Apps
-
-                        '                                              Power
-                        '$30  ---    n     b     h     g    _z_    6    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$006E,$0062,$0068,$0067,$007A,$0036,Power
-
-                        '                                              Sleep
-                        '$38  ---   ---    m     j     u     7     8    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$006D,$006A,$0075,$0037,$0038,Sleep
-
-                        '
-                        '$40  ---    ,     k     i     o     0     9    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$002C,$006B,$0069,$006F,$0030,$0039,$0000
-
-                        '                 (/)
-                        '$48  ---    .    _-_    l   _oe_    p   _sz_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$002E,$EF2D,$006C,de_oe,$0070,$00DF,$0000
-
-                        '
-                        '$50  ---   ---  _ae_   ---  _ue_   _'_   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,de_ae,$0000,de_ue,$0060,$0000,$0000
-
-                        '    CAPS  Right (ENTER)                 Wk.up
-                        '$58 LOCK  SHIFT ENTER  _+_   ---    #    ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word CpsLk,$00F1,$EB0D,$002B,$0000,$0023,WkUp ,$0000
-
-                        '
-                        '$60  ---   _<_   ---   ---   ---   ---  BkSpc  ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$003C,$0000,$0000,$0000,$0000,BkSp ,$0000
-
-                        '           End        Left  Home
-                        '$68  ---   (1)   ---   (4)   (7)   ---   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,CrsEn,$0000,CrsLt,CrsHm,$0000,$0000,$0000
-
-                        '     Ins   Del  Down   ---  Right  Up
-                        '$70  (0)   (.)   (2)   (5)   (6)   (8)   Esc  NumLock
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word  Ins , Del ,CrsDn,$00E5,CrsRt,CrsUp, Esc ,NumLk
-
-                        '                PgDn        PrScr PgUp
-                        '$78  F11   (+)   (3)   (-)   (*)   (9)  ScrLock ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $00DA,$00EC,PgDn ,$00ED,$DCEE,PgUp ,ScrLk,$0000
-
-                        '
-                        '$80  ---   ---   ---   F7
-                        '    ===== ===== ===== =====
-                        word $0000,$0000,$0000,$00D6
-
-
-keypad1                 byte    $CA, $C5, $C3, $C7, $C0, 0, $C1, $C4, $C2, $C6, $C9, $0D, "+-*/"
-
-keypad2                 byte    "0123456789.", $0D, "+-*/"
-
-
-table_shift
-                        '
-                        '$00  ---   F9    ---   F5    F3    F1    F2    F12
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$00D8,$0000,$00D4,$00D2,$00D0,$00D1,$00DB
-
-                        '
-                        '$08  ---   F10   F8    F6    F4    TAB   _°_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$00D9,$00D7,$00D5,$00D3,$0009,$00B0,$0000
-
-                        '          ALT-R Left        CTRL-R
-                        '$10  ---  ALT-L SHIFT  ---  CTRL_L  Q     !    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$F5F4,$00F0,$0000,$F3F2,$0051,$0021,$0000
-
-                        '                                              WIN-L
-                        '$18  ---   ---   _Y_    S     A     W     "    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0059,$0053,$0041,$0057,$0022,$F600
-
-                        '                                              WIN-R
-                        '$20  ---    C     X     D     E     $     §   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0043,$0058,$0044,$0045,$0024,$00A7,$F700
-
-                        '                                              Apps
-                        '$28  ---   Spc    V     F     T     R     %    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0020,$0056,$0046,$0054,$0052,$0025,Apps
-
-                        '                                              Power
-                        '$30  ---    N     B     H     G    _Z_    &    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$004E,$0042,$0048,$0047,$005A,$0026,Power
-
-                        '                                              Sleep
-                        '$38  ---   ---    M     J     U     /     (    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$004D,$004A,$0055,$002F,$0028,Sleep
-
-                        '
-                        '$40  ---    ;     K     I     O    _=_    )    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$003B,$004B,$0049,$004F,$003D,$0029,$0000
-
-                        '                 (/)
-                        '$48  ---    :    ___    L   _OE_    P   _sz_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$003A,$EF5F,$004C,$00D6,$0050,$003F,$0000
-
-                        '
-                        '$50  ---   ---  _AE_   ---  _UE_   _'_   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$00C4,$0000,$00DC,$0060,$0000,$0000
-
-                        '    CAPS  Right (ENTER)                 Wk.up
-                        '$58 LOCK  SHIFT ENTER  _*_   ---   _'_   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word CpsLk,$00F1,$EB0D,$002A,$0000,$0027,WkUp ,$0000
-
-                        '
-                        '$60  ---   _>_   ---   ---   ---   ---  BkSpc  ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$003E,$0000,$0000,$0000,$0000,BkSp ,$0000
-
-                        '           End        Left  Home
-                        '$68  ---   (1)   ---   (4)   (7)   ---   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,CrsEn,$0000,CrsLt,CrsHm,$0000,$0000,$0000
-
-                        '     Ins   Del  Down   ---  Right  Up
-                        '$70  (0)   (.)   (2)   (5)   (6)   (8)   Esc  NumLock
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word  Ins , Del ,CrsDn,$00E5,CrsRt,CrsUp, Esc ,NumLk
-
-                        '                PgDn        PrScr PgUp
-                        '$78  F11   (+)   (3)   (-)   (*)   (9)  ScrLock ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $00DA,$00EC,PgDn ,$00ED,$DCEE,PgUp ,ScrLk,$0000
-
-                        '
-                        '$80  ---   ---   ---   F7
-                        '    ===== ===== ===== =====
-                        word $0000,$0000,$0000,$00D6
-
-
-
-table_alt_r
-                        '
-                        '$00  ---   F9    ---   F5    F3    F1    F2    F12
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0097,$0000,$0090,$009D,$009F,$009E,$0094
-
-                        '
-                        '$08  ---   F10   F8    F6    F4    TAB   _^_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0096,$0093,$0091,$009C,$0009,$0000,$0000
-
-                        '          ALT-R Left        CTRL-R
-                        '$10  ---  ALT-L SHIFT  ---  CTRL_L  q    1   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$F5F4,$00F0,$0000,$F3F2, "@",  "¹", $0000
-
-                        '                                              WIN-L
-                        '$18  ---   ---   _y_    s     a     w     2    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000,$0000, "²", $F600
-
-                        '                                              WIN-R
-                        '$20  ---    c     x     d     e     4     3    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000, "€", $0000, "³", $F700
-
-                        '                                              Apps
-                        '$28  ---   Spc    v     f     t     r     5    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000,$0000,$0000,Apps
-
-                        '                                              Power
-                        '$30  ---    n     b     h     g    _z_    6    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000,$0000,$0000,Power
-
-                        '                                              Sleep
-                        '$38  ---   ---    m     j     u     7     8    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000, "µ", $0000,$0000, "{" , "[" ,Sleep
-
-                        '
-                        '$40  ---    ,     k     i     o     0     9    ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000, "}",  "]", $0000
-
-                        '                 (/)
-                        '$48  ---    .    _-_    l   _oe_    p   _sz_   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000,$0000, "\", $0000
-
-                        '
-                        '$50  ---   ---  _ae_   ---  _ue_   _'_   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000
-
-                        '    CAPS  Right (ENTER)                 Wk.up
-                        '$58 LOCK  SHIFT ENTER  _+_   ---    #    ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word CpsLk,$00F1,$EB0D, "~", $0000,$0000,WkUp ,$0000
-
-                        '
-                        '$60  ---   _<_   ---   ---   ---   ---  BkSpc  ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000, "|", $0000,$0000,$0000,$0000,BkSp ,$0000
-
-                        '           End        Left  Home
-                        '$68  ---   (1)   ---   (4)   (7)   ---   ---   ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0000,CrsEn,$0000,CrsLt,CrsHm,$0000,$0000,$0000
-
-                        '     Ins   Del  Down   ---  Right  Up
-                        '$70  (0)   (.)   (2)   (5)   (6)   (8)   Esc  NumLock
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word  Ins , Del ,CrsDn,$00E5,CrsRt,CrsUp, Esc ,NumLk
-
-                        '                PgDn        PrScr PgUp
-                        '$78  F11   (+)   (3)   (-)   (*)   (9)  ScrLock ---
-                        '    ===== ===== ===== ===== ===== ===== ===== =====
-                        word $0095,$00EC,PgDn ,$00ED,$DCEE,PgUp ,ScrLk,$0000
-
-                        '
-                        '$80  ---   ---   ---   F7
-                        '    ===== ===== ===== =====
-                        word $0000,$0000,$0000,$0092
-
-
-{{keyboard-de end}}
-
-'
-'
-' Uninitialized data
-'
-dmask                   res     1
-cmask                   res     1
-stat                    res     1
-data                    res     1
-data_s                  res     1       'Scancode-Storage (for keyboard-de)
-x                       res     1
-y                       res     1
-t                       res     1
-
-_head                   res     1       'write-only
-_present                res     1       'write-only
-_states                 res     8       'write-only
-_dpin                   res     1       'read-only at start
-_cpin                   res     1       'read-only at start
-_locks                  res     1       'read-only at start
-_auto                   res     1       'read-only at start
-
-''
-''
-''      _________
-''      Key Codes
-''
-''      00..DF  = keypress and keystate
-''      E0..FF  = keystate only
-''
-''
-''      09      Tab
-''      0D      Enter
-''      20      Space
-''      21      !
-''      22      "
-''      23      #
-''      24      $
-''      25      %
-''      26      &
-''      27      '
-''      28      (
-''      29      )
-''      2A      *
-''      2B      +
-''      2C      ,
-''      2D      -
-''      2E      .
-''      2F      /
-''      30      0..9
-''      3A      :
-''      3B      ;
-''      3C      <
-''      3D      =
-''      3E      >
-''      3F      ?
-''      40      @
-''      41..5A  A..Z
-''      5B      [
-''      5C      \
-''      5D      ]
-''      5E      ^
-''      5F      _
-''      60      `
-''      61..7A  a..z
-''      7B      {
-''      7C      |
-''      7D      }
-''      7E      ~
-''
-''      80-BF   (future international character support)
-''
-''      C0      Left Arrow
-''      C1      Right Arrow
-''      C2      Up Arrow
-''      C3      Down Arrow
-''      C4      Home
-''      C5      End
-''      C6      Page Up
-''      C7      Page Down
-''      C8      Backspace
-''      C9      Delete
-''      CA      Insert
-''      CB      Esc
-''      CC      Apps
-''      CD      Power
-''      CE      Sleep
-''      CF      Wakeup
-''
-''      D0..DB  F1..F12
-''      DC      Print Screen
-''      DD      Scroll Lock
-''      DE      Caps Lock
-''      DF      Num Lock
-''
-''      E0..E9  Keypad 0..9
-''      EA      Keypad .
-''      EB      Keypad Enter
-''      EC      Keypad +
-''      ED      Keypad -
-''      EE      Keypad *
-''      EF      Keypad /
-''
-''      F0      Left Shift
-''      F1      Right Shift
-''      F2      Left Ctrl
-''      F3      Right Ctrl
-''      F4      Left Alt
-''      F5      Right Alt
-''      F6      Left Win
-''      F7      Right Win
-''
-''      FD      Scroll Lock State
-''      FE      Caps Lock State
-''      FF      Num Lock State
-''
-''      +100    if Shift
-''      +200    if Ctrl
-''      +400    if Alt
-''      +800    if Win
-''
-''      eg. Ctrl-Alt-Delete = $6C9
-''
-''
-'' Note: Driver will buffer up to 15 keystrokes, then ignore overflow.
-
-{{
-
-┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                                   TERMS OF USE: MIT License                                                  │
-├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
-│Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation    │
-│files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,    │
-│modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software│
-│is furnished to do so, subject to the following conditions:                                                                   │
-│                                                                                                                              │
-│The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.│
-│                                                                                                                              │
-│THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE          │
-│WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR         │
-│COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,   │
-│ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                         │
-└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-}}
+' Each long holds four scan lines of a single character. The longs are arranged into
+' groups of 256 which represent all characters (0..256). There are four groups which
+' each contain a vertical part of all characters. They are ordered from top to bottom.
+' bottom.
+
+font1  long
+  long $0082ba00,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
+  long $00000000,$6e660000,$66660000,$18181818,$00000000,$00000000,$18181818,$18181818
+  long $0000ffff,$00000000,$00000000,$00000000,$00000000,$18181818,$18181818,$18181818
+  long $00000000,$18181818,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
+  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
+  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
+  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
+  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
+  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
+  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
+  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
+  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
+  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
+  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
+  long $00000000,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
+  long $00000000,$6e660000,$66660000,$24242424,$00000000,$00000000,$24242424,$24242424
+  long $00ff00ff,$ff000000,$00000000,$00000000,$00000000,$24242424,$24242424,$24242424
+  long $00000000,$24242424,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
+  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
+  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
+  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
+  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
+  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
+  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
+  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
+  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
+  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
+  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
+
+  long $82008282,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
+  long $187e1818,$0066767e,$00183c24,$1f181818,$1f000000,$f8000000,$f8181818,$ff181818
+  long $00000000,$0000ffff,$00000000,$00000000,$00000000,$f8181818,$1f181818,$ff181818
+  long $ff000000,$18181818,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
+  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
+  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
+  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
+  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
+  long $6a7a6262,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
+  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
+  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
+  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
+  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
+  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
+  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
+  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
+  long $00000000,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
+  long $187e1818,$0066767e,$00183c24,$20272424,$203f0000,$04fc0000,$04e42424,$00e72424
+  long $00000000,$0000ff00,$ff000000,$00000000,$00000000,$04e42424,$20272424,$00e72424
+  long $00ff0000,$24242424,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
+  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
+  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
+  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
+  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
+  long $76766666,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
+  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
+  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
+  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
+  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
+  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
+  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
+  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
+
+  long $82820082,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
+  long $007e0018,$18181818,$30303078,$0000001f,$1818181f,$181818f8,$000000f8,$181818ff
+  long $00000000,$00000000,$0000ffff,$ff000000,$00000000,$181818f8,$1818181f,$000000ff
+  long $181818ff,$18181818,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
+  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
+  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
+  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
+  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
+  long $3c62027a,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
+  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
+  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
+  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
+  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
+  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
+  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
+  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
+  long $00000000,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
+  long $007e0018,$18181818,$30303078,$00003f20,$24242720,$2424e404,$0000fc04,$2424e700
+  long $00000000,$00000000,$0000ff00,$00ff0000,$00000000,$2424e404,$24242720,$0000ff00
+  long $2424e700,$24242424,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
+  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
+  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
+  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
+  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
+  long $3c660676,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
+  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
+  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
+  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
+  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
+  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
+  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
+  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
+
+  long $00ba8200,$00000000,$00002a55,$00000030,$00000018,$00000058,$00000018,$00000000
+  long $00000000,$00000078,$00000030,$00000000,$18181818,$18181818,$00000000,$18181818
+  long $00000000,$00000000,$00000000,$000000ff,$ffff0000,$18181818,$18181818,$00000000
+  long $18181818,$18181818,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000018,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000018,$0000000c,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$000000fe
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00003c66
+  long $00000000,$00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000606,$00006060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000,$aa55aa55
+  long $ff000000,$ff000000,$ff002a55,$ff000030,$ff000018,$ff000058,$ff000018,$ff000000
+  long $ff000000,$ff000078,$ff000030,$00000000,$24242424,$24242424,$00000000,$24242424
+  long $00000000,$00000000,$00000000,$000000ff,$ff00ff00,$24242424,$24242424,$00000000
+  long $24242424,$24242424,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff00000c,$ff000000,$ff000018,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000018,$ff00000c,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff0000fe
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff003c66
+  long $ff000000,$ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000606,$ff006060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff55aa55
+
+font2    long
+  long $00000000,$817e0000,$ff7e0000,$00000000,$00000000,$18000000,$18000000,$00000000
+  long $ffffffff,$00000000,$ffffffff,$70780000,$663c0000,$ccfc0000,$c6fe0000,$18000000
+  long $07030100,$70604000,$3c180000,$66660000,$dbfe0000,$06633e00,$00000000,$3c180000
+  long $3c180000,$18180000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$3c180000,$66666600,$36000000,$633e1818,$00000000,$361c0000,$0c0c0c00
+  long $18300000,$180c0000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $663c0000,$1c180000,$633e0000,$633e0000,$38300000,$037f0000,$061c0000,$637f0000
+  long $633e0000,$633e0000,$00000000,$00000000,$60000000,$00000000,$06000000,$633e0000
+  long $3e000000,$1c080000,$663f0000,$663c0000,$361f0000,$667f0000,$667f0000,$663c0000
+  long $63630000,$183c0000,$30780000,$66670000,$060f0000,$e7c30000,$67630000,$633e0000
+  long $663f0000,$633e0000,$663f0000,$633e0000,$dbff0000,$63630000,$c3c30000,$c3c30000
+  long $c3c30000,$c3c30000,$c3ff0000,$0c3c0000,$01000000,$303c0000,$63361c08,$00000000
+  long $00180c0c,$00000000,$06070000,$00000000,$30380000,$00000000,$361c0000,$00000000
+  long $06070000,$18180000,$60600000,$06070000,$181c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0c080000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18700000,$18180000,$180e0000,$3b6e0000,$00000000
+  long $663c0000,$00330000,$0c183000,$361c0800,$00330000,$180c0600,$1c361c00,$00000000
+  long $361c0800,$00630000,$180c0600,$00660000,$663c1800,$180c0600,$08006300,$001c361c
+  long $00060c18,$00000000,$367c0000,$361c0800,$00630000,$180c0600,$331e0c00,$180c0600
+  long $00630000,$3e006300,$63006300,$7e181800,$26361c00,$66c30000,$66663f00,$18d87000
+  long $060c1800,$0c183000,$060c1800,$060c1800,$3b6e0000,$63003b6e,$36363c00,$36361c00
+  long $0c0c0000,$00000000,$00000000,$43030300,$43030300,$18180000,$00000000,$00000000
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$00000000
+  long $00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$18181818,$00000000
+  long $18181818,$18181818,$00000000,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$18181818
+  long $6c6c6c6c,$00000000,$00000000,$6c6c6c6c,$18181818,$00000000,$00000000,$6c6c6c6c
+  long $18181818,$18181818,$00000000,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$331e0000,$637f0000,$00000000,$7f000000,$00000000,$00000000,$00000000
+  long $7e000000,$1c000000,$361c0000,$0c780000,$00000000,$c0000000,$0c380000,$3e000000
+  long $00000000,$00000000,$0c000000,$30000000,$d8700000,$18181818,$00000000,$00000000
+  long $36361c00,$00000000,$00000000,$3030f000,$36361b00,$0c1b0e00,$00000000,$00000000
+
+  long $00000000,$bd8181a5,$c3ffffdb,$7f7f7f36,$7f3e1c08,$e7e73c3c,$ffff7e3c,$3c180000
+  long $c3e7ffff,$42663c00,$bd99c3ff,$331e4c58,$3c666666,$0c0c0cfc,$c6c6c6fe,$e73cdb18
+  long $1f7f1f0f,$7c7f7c78,$1818187e,$66666666,$d8dedbdb,$6363361c,$00000000,$1818187e
+  long $1818187e,$18181818,$7f301800,$7f060c00,$03030000,$ff662400,$3e1c1c08,$3e3e7f7f
+  long $00000000,$18183c3c,$00000024,$36367f36,$603e0343,$18306343,$3b6e1c36,$00000006
+  long $0c0c0c0c,$30303030,$ff3c6600,$7e181800,$00000000,$7f000000,$00000000,$18306040
+  long $dbdbc3c3,$1818181e,$0c183060,$603c6060,$7f33363c,$603f0303,$633f0303,$18306060
+  long $633e6363,$607e6363,$00001818,$00001818,$060c1830,$00007e00,$6030180c,$18183063
+  long $7b7b6363,$7f636336,$663e6666,$03030343,$66666666,$161e1646,$161e1646,$7b030343
+  long $637f6363,$18181818,$30303030,$1e1e3666,$06060606,$c3dbffff,$737b7f6f,$63636363
+  long $063e6666,$63636363,$363e6666,$301c0663,$18181899,$63636363,$c3c3c3c3,$dbc3c3c3
+  long $18183c66,$183c66c3,$0c183061,$0c0c0c0c,$1c0e0703,$30303030,$00000000,$00000000
+  long $00000000,$3e301e00,$66361e06,$03633e00,$33363c30,$7f633e00,$060f0626,$33336e00
+  long $666e3606,$18181c00,$60607000,$1e366606,$18181818,$dbff6700,$66663b00,$63633e00
+  long $66663b00,$33336e00,$666e3b00,$06633e00,$0c0c3f0c,$33333300,$c3c3c300,$c3c3c300
+  long $3c66c300,$63636300,$18337f00,$180e1818,$18001818,$18701818,$00000000,$63361c08
+  long $03030343,$33333300,$7f633e00,$3e301e00,$3e301e00,$3e301e00,$3e301e00,$0606663c
+  long $7f633e00,$7f633e00,$7f633e00,$18181c00,$18181c00,$18181c00,$6363361c,$6363361c
+  long $3e06667f,$d8dc7600,$337f3333,$63633e00,$63633e00,$63633e00,$33333300,$33333300
+  long $63636300,$63636363,$63636363,$030303c3,$06060f06,$18ff183c,$f666463e,$187e1818
+  long $3e301e00,$18181c00,$63633e00,$33333300,$66663b00,$7b7f6f67,$007e007c,$003e001c
+  long $060c0c00,$037f0000,$607f0000,$0c183363,$0c183363,$18181800,$1b366c00,$6c361b00
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$1f181818,$1f181f18,$6f6c6c6c,$7f000000
+  long $1f181f00,$6f606f6c,$6c6c6c6c,$6f607f00,$7f606f6c,$7f6c6c6c,$1f181f18,$1f000000
+  long $f8181818,$ff181818,$ff000000,$f8181818,$ff000000,$ff181818,$f818f818,$ec6c6c6c
+  long $fc0cec6c,$ec0cfc00,$ff00ef6c,$ef00ff00,$ec0cec6c,$ff00ff00,$ef00ef6c,$ff00ff18
+  long $ff6c6c6c,$ff00ff00,$ff000000,$fc6c6c6c,$f818f818,$f818f800,$fc000000,$ff6c6c6c
+  long $ff18ff18,$1f181818,$f8000000,$ffffffff,$ff000000,$0f0f0f0f,$f0f0f0f0,$00ffffff
+  long $1b3b6e00,$331b3333,$03030363,$3636367f,$180c0663,$1b1b7e00,$66666666,$18183b6e
+  long $66663c18,$7f636336,$36636363,$667c3018,$dbdb7e00,$dbdb7e60,$063e0606,$63636363
+  long $7f00007f,$187e1818,$30603018,$0c060c18,$181818d8,$18181818,$7e001818,$003b6e00
+  long $0000001c,$18000000,$00000000,$37303030,$00363636,$001f1306,$3e3e3e3e,$00000000
+
+  long $00000000,$7e818199,$7effffe7,$081c3e7f,$00081c3e,$3c1818e7,$3c18187e,$0000183c
+  long $ffffe7c3,$003c6642,$ffc399bd,$1e333333,$18187e18,$070f0e0c,$67e7e6c6,$1818db3c
+  long $0103070f,$40607078,$00183c7e,$66660066,$d8d8d8d8,$63301c36,$7f7f7f7f,$7e183c7e
+  long $18181818,$183c7e18,$00001830,$00000c06,$00007f03,$00002466,$007f7f3e,$00081c1c
+  long $00000000,$18180018,$00000000,$36367f36,$3e636160,$6163060c,$6e333333,$00000000
+  long $30180c0c,$0c183030,$0000663c,$00001818,$18181800,$00000000,$18180000,$0103060c
+  long $3c66c3c3,$7e181818,$7f630306,$3e636060,$78303030,$3e636060,$3e636363,$0c0c0c0c
+  long $3e636363,$1e306060,$00181800,$0c181800,$6030180c,$0000007e,$060c1830,$18180018
+  long $3e033b7b,$63636363,$3f666666,$3c664303,$1f366666,$7f664606,$0f060606,$5c666363
+  long $63636363,$3c181818,$1e333333,$67666636,$7f664606,$c3c3c3c3,$63636363,$3e636363
+  long $0f060606,$3e7b6b63,$67666666,$3e636360,$3c181818,$3e636363,$183c66c3,$6666ffdb
+  long $c3c3663c,$3c181818,$ffc38306,$3c0c0c0c,$40607038,$3c303030,$00000000,$00000000
+  long $00000000,$6e333333,$3e666666,$3e630303,$6e333333,$3e630303,$0f060606,$3e333333
+  long $67666666,$3c181818,$60606060,$6766361e,$3c181818,$dbdbdbdb,$66666666,$3e636363
+  long $3e666666,$3e333333,$0f060606,$3e63301c,$386c0c0c,$6e333333,$183c66c3,$66ffdbdb
+  long $c3663c18,$7e636363,$7f63060c,$70181818,$18181818,$0e181818,$00000000,$007f6363
+  long $303c6643,$6e333333,$3e630303,$6e333333,$6e333333,$6e333333,$6e333333,$60303c66
+  long $3e630303,$3e630303,$3e630303,$3c181818,$3c181818,$3c181818,$6363637f,$6363637f
+  long $7f660606,$ee3b1b7e,$73333333,$3e636363,$3e636363,$3e636363,$6e333333,$6e333333
+  long $7e636363,$3e636363,$3e636363,$18187ec3,$3f670606,$181818ff,$cf666666,$18181818
+  long $6e333333,$3c181818,$3e636363,$6e333333,$66666666,$63636373,$00000000,$00000000
+  long $3e636303,$00030303,$00606060,$60d97306,$7c697366,$183c3c3c,$00006c36,$00001b36
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
+  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
+  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
+  long $6e3b1b1b,$33636363,$03030303,$36363636,$7f63060c,$0e1b1b1b,$06063e66,$18181818
+  long $7e183c66,$1c366363,$77363636,$3c666666,$00007edb,$03067ecf,$380c0606,$63636363
+  long $007f0000,$ff000018,$7e000c18,$7e003018,$18181818,$0e1b1b1b,$00181800,$00003b6e
+  long $00000000,$00000018,$00000018,$383c3636,$00000000,$00000000,$003e3e3e,$00000000
+
+  long $00ffff00,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $ffffffff,$00000000,$ffffffff,$00000000,$00000000,$00000000,$00000003,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$0000003e,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00001818,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00007030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000ff00
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$001e3330
+  long $00000000,$00000000,$003c6666,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $000f0606,$00783030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$001f3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00003e60,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000003c
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $001e3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000e1b
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$0000f830,$00006060,$00000000,$00000000,$00000000
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
+  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
+  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000003,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18181818,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000

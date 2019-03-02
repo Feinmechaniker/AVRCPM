@@ -1,657 +1,560 @@
-{{
+PUB get_fontptr(fontnum)
 
-Info            : VGA Color Driver (8x8 Font)
-Autor           : Joe G.
-Version         : 0.1
-Subversion      : 00
-Funktion        : full color VGA-640x480 Driver
-Komponenten     :
-
-Log
-
-26.01.2014      Start
-
-}}
-
-CON
-_CLKMODE     = XTAL1 + PLL16X
-_XINFREQ     = 5_000_000
-
-CON
-{
-' 640 x 480 @ 69Hz settings: 80 x 30 characters
-
-        hp = 640        ' horizontal pixels
-        vp = 480        ' vertical pixels
-        hf = 24         ' horizontal front porch pixels
-        hs = 40         ' horizontal sync pixels
-        hb = 128        ' horizontal back porch pixels
-        vf = 9          ' vertical front porch lines
-        vs = 3          ' vertical sync lines
-        vb = 28         ' vertical back porch lines
-        hn = 1          ' horizontal normal sync state (0|1)
-        vn = 1          ' vertical normal sync state (0|1)
-        pr = 30         ' pixel rate in MHz at 80MHz system clock (5MHz granularity)
-}
-
-' 640 x 480 @ 69Hz settings: 80 x 30 characters
-
-        hp = 640        ' horizontal pixels
-        vp = 480        ' vertical pixels
-        hf = 30         ' horizontal front porch pixels
-        hs = 44         ' horizontal sync pixels
-        hb = 86        ' horizontal back porch pixels           !!!!!!
-        vf = 9          ' vertical front porch lines
-        vs = 3          ' vertical sync lines
-        vb = 28         ' vertical back porch lines
-        hn = 1          ' horizontal normal sync state (0|1)
-        vn = 1          ' vertical normal sync state (0|1)
-        pr = 30         ' pixel rate in MHz at 80MHz system clock (5MHz granularity)
-
-{
-' 640 x 480 @ 69Hz settings: 80 x 30 characters
-
-        hp = 640        ' horizontal pixels
-        vp = 480        ' vertical pixels
-        hf = 16         ' horizontal front porch pixels
-        hs = 95         ' horizontal sync pixels
-        hb = 48        ' horizontal back porch pixels           !!!!!!
-        vf = 9          ' vertical front porch lines
-        vs = 3          ' vertical sync lines
-        vb = 28         ' vertical back porch lines
-        hn = 1          ' horizontal normal sync state (0|1)
-        vn = 1          ' vertical normal sync state (0|1)
-        pr = 30         ' pixel rate in MHz at 80MHz system clock (5MHz granularity)
-}
-
-
-' columns and rows
-
-        cols = hp / 8
-        rows = vp / 16
-        chrs = cols * rows
-
-VAR long cog[2]
-
-PUB start(BasePin, ScreenPtr, CursorPtr, SyncPtr) : okay | i, j
-
-'' Start VGA driver - starts two COGs
-'' returns false if two COGs not available
-''
-''      BasePin = VGA starting pin (0, 8, 16, 24, etc.)
-''
-''      ScreenPtr = Pointer to 80x30 words containing Latin-1 codes and colors for
-''              each of the 80x30 screen characters. The lower byte of the word
-''              contains the Latin-1 code to display. The upper byte contains
-''              the foreground colour in bits 11..8 and the background colour in
-''              bits 15..12.
-''
-''              screen word example: %00011111_01000001 = "A", white on blue
-''
-''      CursorPtr = Pointer to 6 bytes which control the cursors:
-''
-''              bytes 0,1,2: X, Y, and MODE of cursor 0
-''              bytes 3,4,5: X, Y, and MODE of cursor 1
-''
-''              X and Y are in terms of screen characters
-''              (left-to-right, top-to-bottom)
-''
-''              MODE uses three bottom bits:
-''
-''                      %x00 = cursor off
-''                      %x01 = cursor on
-''                      %x10 = cursor on, blink slow
-''                      %x11 = cursor on, blink fast
-''                      %0xx = cursor is solid block
-''                      %1xx = cursor is underscore
-''
-''              cursor example: 127, 63, %010 = blinking block in lower-right
-''
-''      SyncPtr = Pointer to long which gets written with -1 upon each screen
-''              refresh. May be used to time writes/scrolls, so that chopiness
-''              can be avoided. You must clear it each time if you want to see
-''              it re-trigger.
-
-        ' if driver is already running, stop it
-        stop
-
-        ' implant pin settings
-        reg_vcfg := $200000FF + (BasePin & %111000) << 6
-        i := $FF << (BasePin & %011000)
-        j := BasePin & %100000 == 0
-        reg_dira := i & j
-        reg_dirb := i & !j
-
-        ' implant CNT value to sync COGs to
-        sync_cnt := cnt + $10000
-
-        ' implant pointers
-        longmove(@screen_base, @ScreenPtr, 2)
-        font_base := @font
-
-        ' implant unique settings and launch first COG
-        vf_lines.byte := vf
-        vb_lines.byte := vb
-        font_part := 1
-        cog[1] := cognew(@entry, SyncPtr) + 1
-
-        ' allow time for first COG to launch
-        waitcnt($2000 + cnt)
-
-        ' differentiate settings and launch second COG
-        vf_lines.byte := vf+8
-        vb_lines.byte := vb-8
-        font_part := 0
-        cog[0] := cognew(@entry, SyncPtr) + 1
-
-        ' if both COGs launched, return true
-        if cog[0] and cog[1]
-                return true
-
-        ' else, stop any launched COG and return false
-        stop
-
-
-PUB stop | i
-
-'' Stop VGA driver - frees two COGs
-
-        repeat i from 0 to 1
-        if cog[i]
-        cogstop(cog[i]~ - 1)
-
-
-CON
-        hv_inactive = (hn << 1 + vn) * $0101                    'H,V inactive states
+  case fontnum
+    1:
+      result := @font1
+    2:
+      result := @font2
+    other:
+      result := @font0
 
 
 DAT
-
-'*****************************************************
-'* Assembly language VGA high-resolution text driver *
-'*****************************************************
-
-' This program runs concurrently in two different COGs.
-'
-' Each COG's program has different values implanted for front-porch lines and
-' back-porch lines which surround the vertical sync pulse lines. This allows
-' timed interleaving of their active display signals during the visible portion
-' of the field scan. Also, they are differentiated so that one COG displays
-' even four-line groups while the other COG displays odd four-line groups.
-'
-' These COGs are launched in the PUB 'start' and are programmed to synchronize
-' their PLL-driven video circuits so that they can alternately prepare sets of
-' four scan lines and then display them. The COG-to-COG switchover is seemless
-' due to two things: exact synchronization of the two video circuits and the
-' fact that all COGs' driven output states get OR'd together, allowing one COG
-' to output lows during its preparatory state while the other COG effectively
-' drives the pins to create the visible and sync portions of its scan lines.
-' During non-visible scan lines, both COGs output together in unison.
-'
-                        org     0                               ' set origin to $000 for start of program
-entry
-' Initialization code and data - after execution, space gets reused as scanbuff
-
-                        ' Init I/O registers and sync COGs' video circuits
-
-                        mov     dira, reg_dira                  ' set pin directions
-                        mov     dirb, reg_dirb
-                        movi    frqa, #(pr / 5) << 2            ' set pixel rate
-                        mov     vcfg, reg_vcfg                  ' set video configuration
-                        mov     vscl, #1                        ' set video to reload on every pixel
-                        waitcnt sync_cnt, colormask             ' wait for start value in cnt, add ~1ms
-                        movi    ctra, #%00001_110               ' COGs in sync! enable PLLs now - NCOs locked!
-                        waitcnt sync_cnt, #0                    ' wait ~1ms for PLLs to stabilize - PLLs locked!
-                        mov     vscl, #100                      ' insure initial WAITVIDs lock cleanly
-
-' Main loop, display field - each COG alternately builds and displays four scan lines
-
-vsync                   mov     x, #vs                          ' do vertical sync lines
-                        call    #blank_vsync
-
-vb_lines                mov     x, #vb                          ' do vertical back porch lines (# set at runtime)
-                        call    #blank_vsync
-
-                        mov     screen_ptr, screen_base         ' reset screen pointer to upper-left character
-                        mov     row, #0                         ' reset row counter for cursor insertion
-                        mov     fours, #rows                    ' set number of 4-line builds for whole screen
-
-                        ' Build four scan lines into scanbuff
-
-fourline                mov     font_ptr, font_part             ' get address of appropriate font section
-                        shl     font_ptr, #7+2
-                        add     font_ptr, font_base
-
-                        movd    :pixa, #scanbuff-1              ' reset scanbuff address (pre-decremented)
-                        movd    :pixb, #scanbuff-1              ' reset scanbuff address (pre-decremented)
-                        movd    :cola, #colorbuff-1             ' reset colorbuff address (pre-decremented)
-                        movd    :colb, #colorbuff-1
-
-                        mov     y, #4                           ' must build scanbuff in four sections because
-                        mov     vscl, vscl_line2x               ' ..pixel counter is limited to twelve bits
-
-:halfrow                waitvid underscore, #0                  ' output lows to let other COG drive VGA pins
-                        mov     x, #cols/4                      ' ..for 2 scan lines, ready for a quarter row
-
-:column                 rdword  z, screen_ptr                   ' get character and colors from screen memory
-                        mov     bg, z
-                        ror     z, #7
-                        shr     z, #32 - 9              wc
-                        add     z, font_ptr                     ' add font section address to point to 8*4 pixels
-                        add     :pixa, d0                       ' increment scanbuff destination addresses
-                        add     :pixb, d0                       ' increment scanbuff destination addresses
-                        add     screen_ptr, #2                  ' increment screen memory address
-                        cmp     font_part, #1           wz
-:pixa                   rdlong  scanbuff, z                     ' read pixel long (8*4) into scanbuff
-:pixb   if_c_and_z      or      scanbuff, underline
-
-                        ror     bg, #12                         ' background color in bits 3..0
-                        mov     fg, bg                          ' foreground color in bits 31..28
-                        shr     fg, #28                         ' bits 3..0
-                        add     fg, #fg_clut                    ' + offset to foreground CLUT
-                        movs    :cola, fg
-                        add     :cola, d0
-                        add     bg, #bg_clut                    ' + offset to background CLUT
-                        movs    :colb, bg
-                        add     :colb, d0
-:cola                   mov     colorbuff, 0-0
-:colb                   or      colorbuff, 0-0
-
-                        djnz    x, #:column                     ' another character in this half-row?
-                        djnz    y, #:halfrow                    ' loop to do 2nd half-row, time for 2nd WAITVID
-
-                        ' Insert cursors into scanbuff
-
-                        mov     z, #2                           ' ready for two cursors
-
-:cursor                 rdbyte  x, cursor_base                  ' x in range?
-                        add     cursor_base, #1
-                        cmp     x, #cols        wc
-
-                        rdbyte  y, cursor_base                  ' y match?
-                        add     cursor_base, #1
-                        cmp     y, row          wz
-
-                        rdbyte  y, cursor_base                  ' get cursor mode
-                        add     cursor_base, #1
-
-        if_nc_or_nz     jmp     #:nocursor                      ' if cursor not in scanbuff, no cursor
-
-                        add     x, #scanbuff                    ' cursor in scanbuff, set scanbuff address
-                        movd    :xor, x
-
-                        test    y, #%010        wc              ' get mode bits into flags
-                        test    y, #%001        wz
-        if_nc_and_z     jmp     #:nocursor                      ' if cursor disabled, no cursor
-
-        if_c_and_z      test    slowbit, cnt    wc              ' if blink mode, get blink state
-        if_c_and_nz     test    fastbit, cnt    wc
-
-                        test    y, #%100        wz              ' get box or underscore cursor piece
-        if_z            mov     x, longmask
-        if_nz           mov     x, underscore
-        if_nz           cmp     font_part, #1   wz              ' if underscore, must be last font section
-
-:xor    if_nc_and_z     xor     scanbuff, x                     ' conditionally xor cursor into scanbuff
-
-:nocursor               djnz    z, #:cursor                     ' second cursor?
-
-                        sub     cursor_base, #3*2               ' restore cursor base
-
-                        ' Display four scan lines from scanbuff
-
-                        mov     y, #4                           ' ready for four scan lines
-scanline
-                        mov     x, #2           wc              ' clear carry and set sweep count
-sweep
-                        mov     vscl, vscl_chr
-                        waitvid colorbuff+ 0, scanbuff+ 0
-                if_c    ror     scanbuff+ 0, #8
-                        waitvid colorbuff+ 1, scanbuff+ 1
-                if_c    ror     scanbuff+ 1, #8
-                        waitvid colorbuff+ 2, scanbuff+ 2
-                if_c    ror     scanbuff+ 2, #8
-                        waitvid colorbuff+ 3, scanbuff+ 3
-                if_c    ror     scanbuff+ 3, #8
-                        waitvid colorbuff+ 4, scanbuff+ 4
-                if_c    ror     scanbuff+ 4, #8
-                        waitvid colorbuff+ 5, scanbuff+ 5
-                if_c    ror     scanbuff+ 5, #8
-                        waitvid colorbuff+ 6, scanbuff+ 6
-                if_c    ror     scanbuff+ 6, #8
-                        waitvid colorbuff+ 7, scanbuff+ 7
-                if_c    ror     scanbuff+ 7, #8
-
-                        waitvid colorbuff+ 8, scanbuff+ 8
-                if_c    ror     scanbuff+ 8, #8
-                        waitvid colorbuff+ 9, scanbuff+ 9
-                if_c    ror     scanbuff+ 9, #8
-                        waitvid colorbuff+10, scanbuff+10
-                if_c    ror     scanbuff+10, #8
-                        waitvid colorbuff+11, scanbuff+11
-                if_c    ror     scanbuff+11, #8
-                        waitvid colorbuff+12, scanbuff+12
-                if_c    ror     scanbuff+12, #8
-                        waitvid colorbuff+13, scanbuff+13
-                if_c    ror     scanbuff+13, #8
-                        waitvid colorbuff+14, scanbuff+14
-                if_c    ror     scanbuff+14, #8
-                        waitvid colorbuff+15, scanbuff+15
-                if_c    ror     scanbuff+15, #8
-
-                        waitvid colorbuff+16, scanbuff+16
-                if_c    ror     scanbuff+16, #8
-                        waitvid colorbuff+17, scanbuff+17
-                if_c    ror     scanbuff+17, #8
-                        waitvid colorbuff+18, scanbuff+18
-                if_c    ror     scanbuff+18, #8
-                        waitvid colorbuff+19, scanbuff+19
-                if_c    ror     scanbuff+19, #8
-                        waitvid colorbuff+20, scanbuff+20
-                if_c    ror     scanbuff+20, #8
-                        waitvid colorbuff+21, scanbuff+21
-                if_c    ror     scanbuff+21, #8
-                        waitvid colorbuff+22, scanbuff+22
-                if_c    ror     scanbuff+22, #8
-                        waitvid colorbuff+23, scanbuff+23
-                if_c    ror     scanbuff+23, #8
-
-                        waitvid colorbuff+24, scanbuff+24
-                if_c    ror     scanbuff+24, #8
-                        waitvid colorbuff+25, scanbuff+25
-                if_c    ror     scanbuff+25, #8
-                        waitvid colorbuff+26, scanbuff+26
-                if_c    ror     scanbuff+26, #8
-                        waitvid colorbuff+27, scanbuff+27
-                if_c    ror     scanbuff+27, #8
-                        waitvid colorbuff+28, scanbuff+28
-                if_c    ror     scanbuff+28, #8
-                        waitvid colorbuff+29, scanbuff+29
-                if_c    ror     scanbuff+29, #8
-                        waitvid colorbuff+30, scanbuff+30
-                if_c    ror     scanbuff+30, #8
-                        waitvid colorbuff+31, scanbuff+31
-                if_c    ror     scanbuff+31, #8
-
-                        waitvid colorbuff+32, scanbuff+32
-                if_c    ror     scanbuff+32, #8
-                        waitvid colorbuff+33, scanbuff+33
-                if_c    ror     scanbuff+33, #8
-                        waitvid colorbuff+34, scanbuff+34
-                if_c    ror     scanbuff+34, #8
-                        waitvid colorbuff+35, scanbuff+35
-                if_c    ror     scanbuff+35, #8
-                        waitvid colorbuff+36, scanbuff+36
-                if_c    ror     scanbuff+36, #8
-                        waitvid colorbuff+37, scanbuff+37
-                if_c    ror     scanbuff+37, #8
-                        waitvid colorbuff+38, scanbuff+38
-                if_c    ror     scanbuff+38, #8
-                        waitvid colorbuff+39, scanbuff+39
-                if_c    ror     scanbuff+39, #8
-
-                        waitvid colorbuff+40, scanbuff+40
-                if_c    ror     scanbuff+40, #8
-                        waitvid colorbuff+41, scanbuff+41
-                if_c    ror     scanbuff+41, #8
-                        waitvid colorbuff+42, scanbuff+42
-                if_c    ror     scanbuff+42, #8
-                        waitvid colorbuff+43, scanbuff+43
-                if_c    ror     scanbuff+43, #8
-                        waitvid colorbuff+44, scanbuff+44
-                if_c    ror     scanbuff+44, #8
-                        waitvid colorbuff+45, scanbuff+45
-                if_c    ror     scanbuff+45, #8
-                        waitvid colorbuff+46, scanbuff+46
-                if_c    ror     scanbuff+46, #8
-                        waitvid colorbuff+47, scanbuff+47
-                if_c    ror     scanbuff+47, #8
-
-                        waitvid colorbuff+48, scanbuff+48
-                if_c    ror     scanbuff+48, #8
-                        waitvid colorbuff+49, scanbuff+49
-                if_c    ror     scanbuff+49, #8
-                        waitvid colorbuff+50, scanbuff+50
-                if_c    ror     scanbuff+50, #8
-                        waitvid colorbuff+51, scanbuff+51
-                if_c    ror     scanbuff+51, #8
-                        waitvid colorbuff+52, scanbuff+52
-                if_c    ror     scanbuff+52, #8
-                        waitvid colorbuff+53, scanbuff+53
-                if_c    ror     scanbuff+53, #8
-                        waitvid colorbuff+54, scanbuff+54
-                if_c    ror     scanbuff+54, #8
-                        waitvid colorbuff+55, scanbuff+55
-                if_c    ror     scanbuff+55, #8
-
-                        waitvid colorbuff+56, scanbuff+56
-                if_c    ror     scanbuff+56, #8
-                        waitvid colorbuff+57, scanbuff+57
-                if_c    ror     scanbuff+57, #8
-                        waitvid colorbuff+58, scanbuff+58
-                if_c    ror     scanbuff+58, #8
-                        waitvid colorbuff+59, scanbuff+59
-                if_c    ror     scanbuff+59, #8
-                        waitvid colorbuff+60, scanbuff+60
-                if_c    ror     scanbuff+60, #8
-                        waitvid colorbuff+61, scanbuff+61
-                if_c    ror     scanbuff+61, #8
-                        waitvid colorbuff+62, scanbuff+62
-                if_c    ror     scanbuff+62, #8
-                        waitvid colorbuff+63, scanbuff+63
-                if_c    ror     scanbuff+63, #8
-
-                        waitvid colorbuff+64, scanbuff+64
-                if_c    ror     scanbuff+64, #8
-                        waitvid colorbuff+65, scanbuff+65
-                if_c    ror     scanbuff+65, #8
-                        waitvid colorbuff+66, scanbuff+66
-                if_c    ror     scanbuff+66, #8
-                        waitvid colorbuff+67, scanbuff+67
-                if_c    ror     scanbuff+67, #8
-                        waitvid colorbuff+68, scanbuff+68
-                if_c    ror     scanbuff+68, #8
-                        waitvid colorbuff+69, scanbuff+69
-                if_c    ror     scanbuff+69, #8
-                        waitvid colorbuff+70, scanbuff+70
-                if_c    ror     scanbuff+70, #8
-                        waitvid colorbuff+71, scanbuff+71
-                if_c    ror     scanbuff+71, #8
-
-                        waitvid colorbuff+72, scanbuff+72
-                if_c    ror     scanbuff+72, #8
-                        waitvid colorbuff+73, scanbuff+73
-                if_c    ror     scanbuff+73, #8
-                        waitvid colorbuff+74, scanbuff+74
-                if_c    ror     scanbuff+74, #8
-                        waitvid colorbuff+75, scanbuff+75
-                if_c    ror     scanbuff+75, #8
-                        waitvid colorbuff+76, scanbuff+76
-                if_c    ror     scanbuff+76, #8
-                        waitvid colorbuff+77, scanbuff+77
-                if_c    ror     scanbuff+77, #8
-                        waitvid colorbuff+78, scanbuff+78
-                if_c    ror     scanbuff+78, #8
-                        waitvid colorbuff+79, scanbuff+79
-
-                        mov     vscl, #hf                       ' do horizontal front porch pixels
-                        waitvid hvsync, #0                      ' #0 makes hsync inactive
-                        mov     vscl, #hs                       ' do horizontal sync pixels
-                        waitvid hvsync, #1                      ' #1 makes hsync active
-                        mov     vscl, #hb                       ' do horizontal back porch pixels
-                        waitvid hvsync, #0                      ' #0 makes hsync inactive
-                if_c    ror     scanbuff+79, #8
-                        test    x, #2                   wc      ' set carry
-                        djnz    x, #sweep
-                        djnz    y, #scanline                    ' another scan line?
-
-                        ' Next group of four scan lines
-
-                        add     row, #1                         ' if new row, increment row counter
-                        djnz    fours, #fourline                ' another 4-line build/display?
-
-                        ' Visible section done, do vertical sync front porch lines
-
-                        wrlong  longmask,par                    ' write -1 to refresh indicator
-
-vf_lines                mov     x,#vf                           ' do vertical front porch lines (# set at runtime)
-                        call    #blank
-
-                        jmp     #vsync                          ' new field, loop to vsync
-
-                        ' Subroutine - do blank lines
-
-blank_vsync             xor     hvsync,#$101                    ' flip vertical sync bits
-
-blank                   mov     vscl, hx                        ' do blank pixels
-                        waitvid hvsync, #0
-                        mov     vscl, #hf                       ' do horizontal front porch pixels
-                        waitvid hvsync, #0
-                        mov     vscl, #hs                       ' do horizontal sync pixels
-                        waitvid hvsync, #1
-                        mov     vscl, #hb                       ' do horizontal back porch pixels
-                        waitvid hvsync, #0
-                        djnz    x, #blank                       ' another line?
-blank_ret
-blank_vsync_ret
-                        ret
-
-                        ' Data
-
-screen_base             long    0                               ' set at runtime (3 contiguous longs)
-cursor_base             long    0                               ' set at runtime
-
-font_base               long    0                               ' set at runtime
-font_part               long    0                               ' set at runtime
-
-hx                      long    hp                              ' visible pixels per scan line
-vscl_line2x             long    (hp + hf + hs + hb) * 2         ' total number of pixels per 2 scan lines
-vscl_chr                long    1 << 12 + 8                     ' 1 clock per pixel and 8 pixels per set
-colormask               long    $fcfc                           ' mask to isolate R,G,B bits from H,V
-longmask                long    $ffffffff                       ' all bits set
-slowbit                 long    1 << 25                         ' cnt mask for slow cursor blink
-fastbit                 long    1 << 24                         ' cnt mask for fast cursor blink
-underscore              long    $ffff0000                       ' underscore cursor pattern
-underline               long    $ff000000
-hv                      long    hv_inactive                     ' -H,-V states
-hvsync                  long    hv_inactive ^ $200              ' +/-H,-V states
-d0                      long    1 << 9
-d0s0                    long    1 << 9 + 1
-d1                      long    1 << 10
-reg_dira                long    0                               ' set at runtime
-reg_dirb                long    0                               ' set at runtime
-reg_vcfg                long    0                               ' set at runtime
-sync_cnt                long    0                               ' set at runtime
-
-bg_clut                 long    %00000011_00000011              ' black
-                        long    %00000011_00001011              ' dark blue
-                        long    %00000011_00100011              ' dark green
-                        long    %00000011_00101011              ' dark cyan
-                        long    %00000011_10000011              ' dark red
-                        long    %00000011_10001011              ' dark magenta
-                        long    %00000011_10100011              ' brown
-                        long    %00000011_10101011              ' light gray
-                        long    %00000011_01010111              ' dark gray
-                        long    %00000011_00001111              ' light blue
-                        long    %00000011_00110011              ' light green
-                        long    %00000011_00111111              ' light cyan
-                        long    %00000011_11000011              ' light red
-                        long    %00000011_11001111              ' light magenta
-                        long    %00000011_11110011              ' light yellow
-                        long    %00000011_11111111              ' white
-
-fg_clut                 long    %00000011_00000011              ' black
-                        long    %00000111_00000011              ' dark blue
-                        long    %00010011_00000011              ' dark green
-                        long    %00010111_00000011              ' dark cyan
-                        long    %01000011_00000011              ' dark red
-                        long    %01000111_00000011              ' dark magenta
-                        long    %01010011_00000011              ' brown
-                        long    %10101011_00000011              ' light gray
-                        long    %01010111_00000011              ' dark gray
-                        long    %00001011_00000011              ' blue
-                        long    %00100011_00000011              ' green
-                        long    %00101011_00000011              ' cyan
-                        long    %10000011_00000011              ' red
-                        long    %10001011_00000011              ' magenta
-                        long    %10100011_00000011              ' yellow
-                        long    %11111111_00000011              ' white
-
-                        ' Uninitialized data
-
-screen_ptr              res     1
-font_ptr                res     1
-
-x                       res     1
-y                       res     1
-z                       res     1
-fg                      res     1
-bg                      res     1
-
-row                     res     1
-fours                   res     1
-
-scanbuff                res     80
-colorbuff               res     80
-
-                        fit     $1f0
-
-' 8 x 12 font - characters 0..127
-'
-' Each long holds four scan lines of a single character. The longs are arranged into
-' groups of 128 which represent all characters (0..127). There are four groups which
-' each contain a vertical part of all characters. They are ordered top, middle, and
-' bottom.
-
-font    long
+{
+font0  long
+'part 0   --> 0
   long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
   long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $7e5a3c00,$7e3c1800,$7e7e2400,$7e3c1800,$f8000000,$1f000000,$f8181818,$1f181818
-  long $18181818,$ff000000,$1f181818,$f8181818,$ff181818,$ff000000,$ff181818,$aa55aa55
-  long $00000000,$18181800,$66666600,$66ff6600,$3c067c18,$18366600,$1c386c38,$18181800
-  long $0c0c1830,$3030180c,$ff3c6600,$7e181800,$00000000,$7e000000,$00000000,$18306000
-  long $76663c00,$181c1800,$30663c00,$18307e00,$3c383000,$3e067e00,$3e063c00,$30607e00
-  long $3c663c00,$7c663c00,$18180000,$18180000,$0c183060,$007e0000,$30180c06,$30663c00
-  long $76663c00,$663c1800,$3e663e00,$06663c00,$66361e00,$3e067e00,$3e067e00,$06067c00
-  long $7e666600,$18187e00,$60606000,$1e366600,$06060600,$feeec600,$7e6e6600,$66663c00
-  long $66663e00,$66663c00,$66663e00,$3c063c00,$18187e00,$66666600,$66666600,$d6c6c600
-  long $3c666600,$3c666600,$18307e00,$0c0c0c3c,$0c060200,$3030303c,$c66c3810,$00000000
-  long $30180c00,$603c0000,$3e060600,$063c0000,$7c606000,$663c0000,$7c187000,$667c0000
-  long $3e060600,$1c001800,$60006000,$36060600,$18181c00,$fe660000,$663e0000,$663c0000
-  long $663e0000,$667c0000,$663e0000,$067c0000,$187e1800,$66660000,$66660000,$d6c60000
-  long $3c660000,$66660000,$307e0000,$0c181830,$18181800,$3018180c,$0000366c,$142a142a
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 0   --> 1
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 1  --> 2
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+'part 1    --> 3
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
+  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
+  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
+  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
+  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
+  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
+  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
+  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
+  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
+  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
+  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
+  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
+  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
+  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+}
+font0  long
+'part 0   --> 0
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
+
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
+  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
+  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
+  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
+  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
+  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
+  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
+  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
+  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
+  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
+  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
+  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
+
+'part 0   --> 1
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
+  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
+  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
+  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
+  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
+  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
+  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
+  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
+  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
+  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
+  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
+  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
+  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
+
+'part 1  --> 2
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
 
   long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
   long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $007e187e,$007e187e,$00183c7e,$00183c7e,$181818f8,$1818181f,$000000f8,$0000001f
-  long $18181818,$000000ff,$1818181f,$181818f8,$000000ff,$181818ff,$181818ff,$aa55aa55
-  long $00000000,$00180018,$00000000,$0066ff66,$00183e60,$0062660c,$00dc66f6,$00000000
-  long $30180c0c,$0c183030,$0000663c,$00001818,$0c181800,$00000000,$00181800,$0002060c
-  long $003c666e,$007e1818,$007e0c18,$003c6630,$00307e36,$003c6660,$003c6666,$000c0c18
-  long $003c6666,$001c3060,$00181800,$0c181800,$00603018,$00007e00,$00060c18,$00180018
-  long $007c0676,$00667e66,$003e6666,$003c6606,$001e3666,$007e0606,$00060606,$007c6676
-  long $00666666,$007e1818,$003c6660,$0066361e,$007e0606,$00c6c6d6,$0066767e,$003c6666
-  long $0006063e,$006c3666,$0066363e,$003c6060,$00181818,$007e6666,$00183c66,$00c6eefe
-  long $0066663c,$00181818,$007e060c,$3c0c0c0c,$00603018,$3c303030,$00000000,$ff000000
-  long $00000000,$007c667c,$003e6666,$003c0606,$007c6666,$003c067e,$00181818,$3e607c66
-  long $00666666,$003c1818,$3c606060,$0066361e,$003c1818,$00c6d6fe,$00666666,$003c6666
-  long $06063e66,$60607c66,$00060606,$003e603c,$00701818,$007c6666,$00183c66,$006c7cfe
-  long $00663c18,$1e307c66,$007e0c18,$00301818,$00181818,$000c1818,$00000000,$002a142a
+  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
+  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
+  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
+  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
+  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
+  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
+  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
+  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
+  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
+  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
+  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
+  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
+  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
+  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
 
+'part 1    --> 3
+  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
+  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
+  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
+  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
+  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
+  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
+  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
+  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
+  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
+  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
+  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
+  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
+  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
+  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
+  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
+  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
 
-{{
-+------------------------------------------------------------------------------------------------------------------------------+
-|                                   TERMS OF USE: Parallax Object Exchange License                                             |
-+------------------------------------------------------------------------------------------------------------------------------+
-|Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation    | |files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy,    |
-|modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software|
-|is furnished to do so, subject to the following conditions:                                                                   |
-|                                                                                                                              |
-|The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.|
-|                                                                                                                              |
-|THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE          |
-|WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR         |
-|COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,   |
-|ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                         |
-+------------------------------------------------------------------------------------------------------------------------------+
-}}
+  long $FF000000,$FF000000,$FF000000,$FF000000,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f
+  long $FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFffffff,$FFffffff,$FFffffff,$FFffffff
+  long $FF007e7e,$FF007e7e,$FF001818,$FF001818,$FF181818,$FF181818,$FF000000,$FF000000
+  long $FF181818,$FF000000,$FF181818,$FF181818,$FF000000,$FF181818,$FF181818,$FFaa5555
+  long $FF000000,$FF001818,$FF000000,$FF006666,$FF001818,$FF006262,$FF00dcdc,$FF000000
+  long $FF301818,$FF0c1818,$FF000000,$FF000000,$FF0c1818,$FF000000,$FF001818,$FF000202
+  long $FF003c3c,$FF007e7e,$FF007e7e,$FF003c3c,$FF003030,$FF003c3c,$FF003c3c,$FF000c0c
+  long $FF003c3c,$FF001c1c,$FF001818,$FF0c1818,$FF006060,$FF000000,$FF000606,$FF001818
+  long $FF007c7c,$FF006666,$FF003e3e,$FF003c3c,$FF001e1e,$FF007e7e,$FF000606,$FF007c7c
+  long $FF006666,$FF007e7e,$FF003c3c,$FF006666,$FF007e7e,$FF00c6c6,$FF006666,$FF003c3c
+  long $FF000606,$FF006c6c,$FF006666,$FF003c3c,$FF001818,$FF007e7e,$FF001818,$FF00c6c6
+  long $FF006666,$FF001818,$FF007e7e,$FF3c0c0c,$FF006060,$FF3c3030,$FF000000,$FFff0000
+  long $FF000000,$FF007c7c,$FF003e3e,$FF003c3c,$FF007c7c,$FF003c3c,$FF001818,$FF3e6060
+  long $FF006666,$FF003c3c,$FF3c6060,$FF006666,$FF003c3c,$FF00c6c6,$FF006666,$FF003c3c
+  long $FF060606,$FF606060,$FF000606,$FF003e3e,$FF007070,$FF007c7c,$FF001818,$FF006c6c
+  long $FF006666,$FF1e3030,$FF007e7e,$FF003030,$FF001818,$FF000c0c,$FF000000,$FF002a2a
+
+' 8 x 16 font - characters 0..256
+'
+' Each long holds four scan lines of a single character. The longs are arranged into
+' groups of 256 which represent all characters (0..256). There are four groups which
+' each contain a vertical part of all characters. They are ordered from top to bottom.
+' bottom.
+
+font1  long
+  long $0082ba00,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
+  long $00000000,$6e660000,$66660000,$18181818,$00000000,$00000000,$18181818,$18181818
+  long $0000ffff,$00000000,$00000000,$00000000,$00000000,$18181818,$18181818,$18181818
+  long $00000000,$18181818,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
+  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
+  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
+  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
+  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
+  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
+  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
+  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
+  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
+  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
+  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
+  long $00000000,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
+  long $00000000,$6e660000,$66660000,$24242424,$00000000,$00000000,$24242424,$24242424
+  long $00ff00ff,$ff000000,$00000000,$00000000,$00000000,$24242424,$24242424,$24242424
+  long $00000000,$24242424,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
+  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
+  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
+  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
+  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
+  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
+  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
+  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
+  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
+  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
+  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
+
+  long $82008282,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
+  long $187e1818,$0066767e,$00183c24,$1f181818,$1f000000,$f8000000,$f8181818,$ff181818
+  long $00000000,$0000ffff,$00000000,$00000000,$00000000,$f8181818,$1f181818,$ff181818
+  long $ff000000,$18181818,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
+  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
+  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
+  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
+  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
+  long $6a7a6262,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
+  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
+  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
+  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
+  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
+  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
+  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
+  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
+  long $00000000,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
+  long $187e1818,$0066767e,$00183c24,$20272424,$203f0000,$04fc0000,$04e42424,$00e72424
+  long $00000000,$0000ff00,$ff000000,$00000000,$00000000,$04e42424,$20272424,$00e72424
+  long $00ff0000,$24242424,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
+  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
+  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
+  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
+  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
+  long $76766666,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
+  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
+  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
+  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
+  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
+  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
+  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
+  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
+
+  long $82820082,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
+  long $007e0018,$18181818,$30303078,$0000001f,$1818181f,$181818f8,$000000f8,$181818ff
+  long $00000000,$00000000,$0000ffff,$ff000000,$00000000,$181818f8,$1818181f,$000000ff
+  long $181818ff,$18181818,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
+  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
+  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
+  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
+  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
+  long $3c62027a,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
+  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
+  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
+  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
+  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
+  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
+  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
+  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
+  long $00000000,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
+  long $007e0018,$18181818,$30303078,$00003f20,$24242720,$2424e404,$0000fc04,$2424e700
+  long $00000000,$00000000,$0000ff00,$00ff0000,$00000000,$2424e404,$24242720,$0000ff00
+  long $2424e700,$24242424,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
+  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
+  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
+  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
+  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
+  long $3c660676,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
+  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
+  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
+  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
+  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
+  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
+  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
+  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
+
+  long $00ba8200,$00000000,$00002a55,$00000030,$00000018,$00000058,$00000018,$00000000
+  long $00000000,$00000078,$00000030,$00000000,$18181818,$18181818,$00000000,$18181818
+  long $00000000,$00000000,$00000000,$000000ff,$ffff0000,$18181818,$18181818,$00000000
+  long $18181818,$18181818,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000018,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000018,$0000000c,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$000000fe
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00003c66
+  long $00000000,$00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000606,$00006060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000,$aa55aa55
+  long $ff000000,$ff000000,$ff002a55,$ff000030,$ff000018,$ff000058,$ff000018,$ff000000
+  long $ff000000,$ff000078,$ff000030,$00000000,$24242424,$24242424,$00000000,$24242424
+  long $00000000,$00000000,$00000000,$000000ff,$ff00ff00,$24242424,$24242424,$00000000
+  long $24242424,$24242424,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff00000c,$ff000000,$ff000018,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000018,$ff00000c,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff0000fe
+  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff003c66
+  long $ff000000,$ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000606,$ff006060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
+  long $ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff55aa55
+
+font2    long
+  long $00000000,$817e0000,$ff7e0000,$00000000,$00000000,$18000000,$18000000,$00000000
+  long $ffffffff,$00000000,$ffffffff,$70780000,$663c0000,$ccfc0000,$c6fe0000,$18000000
+  long $07030100,$70604000,$3c180000,$66660000,$dbfe0000,$06633e00,$00000000,$3c180000
+  long $3c180000,$18180000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$3c180000,$66666600,$36000000,$633e1818,$00000000,$361c0000,$0c0c0c00
+  long $18300000,$180c0000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $663c0000,$1c180000,$633e0000,$633e0000,$38300000,$037f0000,$061c0000,$637f0000
+  long $633e0000,$633e0000,$00000000,$00000000,$60000000,$00000000,$06000000,$633e0000
+  long $3e000000,$1c080000,$663f0000,$663c0000,$361f0000,$667f0000,$667f0000,$663c0000
+  long $63630000,$183c0000,$30780000,$66670000,$060f0000,$e7c30000,$67630000,$633e0000
+  long $663f0000,$633e0000,$663f0000,$633e0000,$dbff0000,$63630000,$c3c30000,$c3c30000
+  long $c3c30000,$c3c30000,$c3ff0000,$0c3c0000,$01000000,$303c0000,$63361c08,$00000000
+  long $00180c0c,$00000000,$06070000,$00000000,$30380000,$00000000,$361c0000,$00000000
+  long $06070000,$18180000,$60600000,$06070000,$181c0000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0c080000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$18700000,$18180000,$180e0000,$3b6e0000,$00000000
+  long $663c0000,$00330000,$0c183000,$361c0800,$00330000,$180c0600,$1c361c00,$00000000
+  long $361c0800,$00630000,$180c0600,$00660000,$663c1800,$180c0600,$08006300,$001c361c
+  long $00060c18,$00000000,$367c0000,$361c0800,$00630000,$180c0600,$331e0c00,$180c0600
+  long $00630000,$3e006300,$63006300,$7e181800,$26361c00,$66c30000,$66663f00,$18d87000
+  long $060c1800,$0c183000,$060c1800,$060c1800,$3b6e0000,$63003b6e,$36363c00,$36361c00
+  long $0c0c0000,$00000000,$00000000,$43030300,$43030300,$18180000,$00000000,$00000000
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$00000000
+  long $00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$18181818,$00000000
+  long $18181818,$18181818,$00000000,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$18181818
+  long $6c6c6c6c,$00000000,$00000000,$6c6c6c6c,$18181818,$00000000,$00000000,$6c6c6c6c
+  long $18181818,$18181818,$00000000,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
+  long $00000000,$331e0000,$637f0000,$00000000,$7f000000,$00000000,$00000000,$00000000
+  long $7e000000,$1c000000,$361c0000,$0c780000,$00000000,$c0000000,$0c380000,$3e000000
+  long $00000000,$00000000,$0c000000,$30000000,$d8700000,$18181818,$00000000,$00000000
+  long $36361c00,$00000000,$00000000,$3030f000,$36361b00,$0c1b0e00,$00000000,$00000000
+
+  long $00000000,$bd8181a5,$c3ffffdb,$7f7f7f36,$7f3e1c08,$e7e73c3c,$ffff7e3c,$3c180000
+  long $c3e7ffff,$42663c00,$bd99c3ff,$331e4c58,$3c666666,$0c0c0cfc,$c6c6c6fe,$e73cdb18
+  long $1f7f1f0f,$7c7f7c78,$1818187e,$66666666,$d8dedbdb,$6363361c,$00000000,$1818187e
+  long $1818187e,$18181818,$7f301800,$7f060c00,$03030000,$ff662400,$3e1c1c08,$3e3e7f7f
+  long $00000000,$18183c3c,$00000024,$36367f36,$603e0343,$18306343,$3b6e1c36,$00000006
+  long $0c0c0c0c,$30303030,$ff3c6600,$7e181800,$00000000,$7f000000,$00000000,$18306040
+  long $dbdbc3c3,$1818181e,$0c183060,$603c6060,$7f33363c,$603f0303,$633f0303,$18306060
+  long $633e6363,$607e6363,$00001818,$00001818,$060c1830,$00007e00,$6030180c,$18183063
+  long $7b7b6363,$7f636336,$663e6666,$03030343,$66666666,$161e1646,$161e1646,$7b030343
+  long $637f6363,$18181818,$30303030,$1e1e3666,$06060606,$c3dbffff,$737b7f6f,$63636363
+  long $063e6666,$63636363,$363e6666,$301c0663,$18181899,$63636363,$c3c3c3c3,$dbc3c3c3
+  long $18183c66,$183c66c3,$0c183061,$0c0c0c0c,$1c0e0703,$30303030,$00000000,$00000000
+  long $00000000,$3e301e00,$66361e06,$03633e00,$33363c30,$7f633e00,$060f0626,$33336e00
+  long $666e3606,$18181c00,$60607000,$1e366606,$18181818,$dbff6700,$66663b00,$63633e00
+  long $66663b00,$33336e00,$666e3b00,$06633e00,$0c0c3f0c,$33333300,$c3c3c300,$c3c3c300
+  long $3c66c300,$63636300,$18337f00,$180e1818,$18001818,$18701818,$00000000,$63361c08
+  long $03030343,$33333300,$7f633e00,$3e301e00,$3e301e00,$3e301e00,$3e301e00,$0606663c
+  long $7f633e00,$7f633e00,$7f633e00,$18181c00,$18181c00,$18181c00,$6363361c,$6363361c
+  long $3e06667f,$d8dc7600,$337f3333,$63633e00,$63633e00,$63633e00,$33333300,$33333300
+  long $63636300,$63636363,$63636363,$030303c3,$06060f06,$18ff183c,$f666463e,$187e1818
+  long $3e301e00,$18181c00,$63633e00,$33333300,$66663b00,$7b7f6f67,$007e007c,$003e001c
+  long $060c0c00,$037f0000,$607f0000,$0c183363,$0c183363,$18181800,$1b366c00,$6c361b00
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$1f181818,$1f181f18,$6f6c6c6c,$7f000000
+  long $1f181f00,$6f606f6c,$6c6c6c6c,$6f607f00,$7f606f6c,$7f6c6c6c,$1f181f18,$1f000000
+  long $f8181818,$ff181818,$ff000000,$f8181818,$ff000000,$ff181818,$f818f818,$ec6c6c6c
+  long $fc0cec6c,$ec0cfc00,$ff00ef6c,$ef00ff00,$ec0cec6c,$ff00ff00,$ef00ef6c,$ff00ff18
+  long $ff6c6c6c,$ff00ff00,$ff000000,$fc6c6c6c,$f818f818,$f818f800,$fc000000,$ff6c6c6c
+  long $ff18ff18,$1f181818,$f8000000,$ffffffff,$ff000000,$0f0f0f0f,$f0f0f0f0,$00ffffff
+  long $1b3b6e00,$331b3333,$03030363,$3636367f,$180c0663,$1b1b7e00,$66666666,$18183b6e
+  long $66663c18,$7f636336,$36636363,$667c3018,$dbdb7e00,$dbdb7e60,$063e0606,$63636363
+  long $7f00007f,$187e1818,$30603018,$0c060c18,$181818d8,$18181818,$7e001818,$003b6e00
+  long $0000001c,$18000000,$00000000,$37303030,$00363636,$001f1306,$3e3e3e3e,$00000000
+
+  long $00000000,$7e818199,$7effffe7,$081c3e7f,$00081c3e,$3c1818e7,$3c18187e,$0000183c
+  long $ffffe7c3,$003c6642,$ffc399bd,$1e333333,$18187e18,$070f0e0c,$67e7e6c6,$1818db3c
+  long $0103070f,$40607078,$00183c7e,$66660066,$d8d8d8d8,$63301c36,$7f7f7f7f,$7e183c7e
+  long $18181818,$183c7e18,$00001830,$00000c06,$00007f03,$00002466,$007f7f3e,$00081c1c
+  long $00000000,$18180018,$00000000,$36367f36,$3e636160,$6163060c,$6e333333,$00000000
+  long $30180c0c,$0c183030,$0000663c,$00001818,$18181800,$00000000,$18180000,$0103060c
+  long $3c66c3c3,$7e181818,$7f630306,$3e636060,$78303030,$3e636060,$3e636363,$0c0c0c0c
+  long $3e636363,$1e306060,$00181800,$0c181800,$6030180c,$0000007e,$060c1830,$18180018
+  long $3e033b7b,$63636363,$3f666666,$3c664303,$1f366666,$7f664606,$0f060606,$5c666363
+  long $63636363,$3c181818,$1e333333,$67666636,$7f664606,$c3c3c3c3,$63636363,$3e636363
+  long $0f060606,$3e7b6b63,$67666666,$3e636360,$3c181818,$3e636363,$183c66c3,$6666ffdb
+  long $c3c3663c,$3c181818,$ffc38306,$3c0c0c0c,$40607038,$3c303030,$00000000,$00000000
+  long $00000000,$6e333333,$3e666666,$3e630303,$6e333333,$3e630303,$0f060606,$3e333333
+  long $67666666,$3c181818,$60606060,$6766361e,$3c181818,$dbdbdbdb,$66666666,$3e636363
+  long $3e666666,$3e333333,$0f060606,$3e63301c,$386c0c0c,$6e333333,$183c66c3,$66ffdbdb
+  long $c3663c18,$7e636363,$7f63060c,$70181818,$18181818,$0e181818,$00000000,$007f6363
+  long $303c6643,$6e333333,$3e630303,$6e333333,$6e333333,$6e333333,$6e333333,$60303c66
+  long $3e630303,$3e630303,$3e630303,$3c181818,$3c181818,$3c181818,$6363637f,$6363637f
+  long $7f660606,$ee3b1b7e,$73333333,$3e636363,$3e636363,$3e636363,$6e333333,$6e333333
+  long $7e636363,$3e636363,$3e636363,$18187ec3,$3f670606,$181818ff,$cf666666,$18181818
+  long $6e333333,$3c181818,$3e636363,$6e333333,$66666666,$63636373,$00000000,$00000000
+  long $3e636303,$00030303,$00606060,$60d97306,$7c697366,$183c3c3c,$00006c36,$00001b36
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
+  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
+  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
+  long $6e3b1b1b,$33636363,$03030303,$36363636,$7f63060c,$0e1b1b1b,$06063e66,$18181818
+  long $7e183c66,$1c366363,$77363636,$3c666666,$00007edb,$03067ecf,$380c0606,$63636363
+  long $007f0000,$ff000018,$7e000c18,$7e003018,$18181818,$0e1b1b1b,$00181800,$00003b6e
+  long $00000000,$00000018,$00000018,$383c3636,$00000000,$00000000,$003e3e3e,$00000000
+
+  long $00ffff00,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $ffffffff,$00000000,$ffffffff,$00000000,$00000000,$00000000,$00000003,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$0000003e,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00001818,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00007030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000ff00
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$001e3330
+  long $00000000,$00000000,$003c6666,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $000f0606,$00783030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$001f3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00003e60,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000003c
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $001e3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000e1b
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$0000f830,$00006060,$00000000,$00000000,$00000000
+  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
+  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
+  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
+  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
+  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000003,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$18181818,$00000000,$00000000,$00000000
+  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
