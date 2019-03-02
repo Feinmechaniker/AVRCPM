@@ -2,15 +2,15 @@
 Iamthemagicnumber=1
 
 [Main]
-SelectedTab=9
-NumSubs=10
+SelectedTab=3
+NumSubs=4
 OverrideOptimisation=0
 OptimiseFlags=0
 TreePath=C:\
 
 [File1]
 FileName=B:\Projekte\91_VT100\Basic_I2C_Driver.spin
-TopLine=1
+TopLine=52
 
 [File2]
 FileName=B:\Projekte\91_VT100\eeprom.spin
@@ -21,8 +21,8 @@ FileName=B:\Projekte\91_VT100\fonts.spin
 TopLine=1
 
 [File4]
-FileName=B:\Projekte\91_VT100\fonts-lin.spin
-TopLine=1
+FileName=B:\Projekte\91_VT100\VT100_VGA_color.spin
+TopLine=936
 
 [File5]
 FileName=B:\Projekte\91_VT100\FullDuplexSerial.spin
