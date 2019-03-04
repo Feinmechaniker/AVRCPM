@@ -124,7 +124,7 @@ signon:
 	db	cr,lf
 	db	msize/10+'0'
 	db	msize - (msize/10)*10 + '0'	;modulo doesn't work?
-	db	"k cp/m vers 2.2x"
+	db	"k cp/m vers 2.2"
 msgnl:	db	cr,lf,0
 
 msgnodisk:
@@ -714,4 +714,4 @@ bootspt:ds	1
 
 	end
 
-                                                                                                    
+
