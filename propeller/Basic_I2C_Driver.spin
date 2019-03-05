@@ -1,560 +1,276 @@
-PUB get_fontptr(fontnum)
+'' Basic I2C Routines  Version 1.1
+'' Written by Michael Green and copyright (©) 2007
+'' Permission is given to use this in any program for the Parallax
+'' Propeller processor as long as this copyright notice is included.
 
-  case fontnum
-    1:
-      result := @font1
-    2:
-      result := @font2
-    other:
-      result := @font0
+'' This is a minimal version of an I2C driver in SPIN.  It assumes
+'' that the SDA pin is one higher than the SCL pin.  It assumes that
+'' neither the SDA nor the SCL pins have pullups, so drives both.
 
+'' These routines are primarily intended for reading and writing EEPROMs.
+'' The low level I2C are provided for use with other devices, but the
+'' read/write byte routines assume a standard I2C serial EEPROM with a
+'' 16 bit device address register, paged writes, and acknowledge polling.
 
-DAT
+'' All of these read/write routines accept an EEPROM address up to 19
+'' bits (512K) even though the EEPROM addressing scheme normally allows
+'' for only 16 bits of addressing.  The upper 3 bits are used as part of
+'' the device select code and these routines will take the upper 3 bits
+'' of the address and "or" it with the supplied device select code bits
+'' 3-1 which are used to select a particular EEPROM on an I2C bus.  There
+'' are two schemes for selecting 64K "banks" in 128Kx8 EEPROMs.  Atmel's
+'' 24LC1024 EEPROMs allow simple linear addressing up to 256Kx8 ($00000
+'' to $3FFFF).  Microchip's 24LC1025 allows for up to 512Kx8, but in two
+'' areas: $00000 to $3FFFF and $40000 to $7FFFF.  Each EEPROM provides
+'' a 64K "bank" in each area.  See the device datasheets for details.
+
+'' This will work with the boot EEPROM and does not require a pull-up
+'' resistor on the SCL line (but does on the SDA line ... about 4.7K to
+'' +3.3V).  According to the Philips I2C specification, both pull-ups
+'' are required.  Many devices will tolerate the absence of a pull-up
+'' on SCL.  Some may tolerate the absence of a pull-up on SDA as well.
+
+'' Initialize may have to be called once at the beginning of your
+'' program.  Sometimes an I2C device is left in an invalid state.  This
+'' will reset the device to a known state so it will respond to the I2C
+'' start transition (sent out by the i2cStart routine).
+
+'' To read from or write to an EEPROM on pins 28/29 like the boot EEPROM:
+
+'' CON
+''   eepromAddress = $7000
+
+'' VAR
+''   byte buffer[32]
+
+'' OBJ
+''   i2c : "Minimal_I2C_Driver"
+
+'' PRI readIt
+''   if i2c.ReadPage(i2c#BootPin, i2c#EEPROM, eepromAddress, @buffer, 32)
+''     abort ' an error occurred during the read
+
+'' PRI writeIt | startTime
+''   if i2c.WritePage(i2c#BootPin, i2c#EEPROM, eepromAddress, @buffer, 32)
+''     abort ' an error occured during the write
+''   startTime := cnt ' prepare to check for a timeout
+''   repeat while i2c.WriteWait(i2c#BootPin, i2c#EEPROM, eepromAddress)
+''     if cnt - startTime > clkfreq / 10
+''       abort ' waited more than a 1/10 second for the write to finish
+
+'' Note that the read and write use something called paged reads/writes.
+'' This means that any read using ReadPage must fit entirely in one
+'' EEPROM if you have several attached to one set of pins.  For writes,
+'' any write using i2cWritePage must fit entirely within a page of the
+'' EEPROM.  Usually these pages are either 32, 64, 128 or 256 bytes in
+'' size depending on the manufacturer and device type.  32 bytes is a
+'' good limit for the number of bytes to be written at a time if you
+'' don't know the specific page size (and the write must fit completely
+'' within a multiple of the page size).  The WriteWait waits for the
+'' write operation to complete.  Alternatively, you could wait for 5ms
+'' since currently produced EEPROMs will finish within that time.
+
+CON
+   ACK      = 0                        ' I2C Acknowledge
+   NAK      = 1                        ' I2C No Acknowledge
+   Xmit     = 0                        ' I2C Direction Transmit
+   Recv     = 1                        ' I2C Direction Receive
+   BootPin  = 28                       ' I2C Boot EEPROM SCL Pin
+   EEPROM   = $A0                      ' I2C EEPROM Device Address
+
+PUB Initialize(SCL) | SDA              ' An I2C device may be left in an
+   SDA := SCL + 1                      '  invalid state and may need to be
+   outa[SCL] := 1                      '   reinitialized.  Drive SCL high.
+   dira[SCL] := 1
+   dira[SDA] := 0                      ' Set SDA as input
+   repeat 9
+      outa[SCL] := 0                   ' Put out up to 9 clock pulses
+      outa[SCL] := 1
+      if ina[SDA]                      ' Repeat if SDA not driven high
+         quit                          '  by the EEPROM
+
+PUB Start(SCL) | SDA                   ' SDA goes HIGH to LOW with SCL HIGH
+   SDA := SCL + 1
+   outa[SCL]~~                         ' Initially drive SCL HIGH
+   dira[SCL]~~
+   outa[SDA]~~                         ' Initially drive SDA HIGH
+   dira[SDA]~~
+   outa[SDA]~                          ' Now drive SDA LOW
+   outa[SCL]~                          ' Leave SCL LOW
+
+PUB Stop(SCL) | SDA                    ' SDA goes LOW to HIGH with SCL High
+   SDA := SCL + 1
+   outa[SCL]~~                         ' Drive SCL HIGH
+   outa[SDA]~~                         '  then SDA HIGH
+   dira[SCL]~                          ' Now let them float
+   dira[SDA]~                          ' If pullups present, they'll stay HIGH
+
+PUB Write(SCL, data) : ackbit | SDA
+'' Write i2c data.  Data byte is output MSB first, SDA data line is valid
+'' only while the SCL line is HIGH.  Data is always 8 bits (+ ACK/NAK).
+'' SDA is assumed LOW and SCL and SDA are both left in the LOW state.
+   SDA := SCL + 1
+   ackbit := 0
+   data <<= 24
+   repeat 8                            ' Output data to SDA
+      outa[SDA] := (data <-= 1) & 1
+      outa[SCL]~~                      ' Toggle SCL from LOW to HIGH to LOW
+      outa[SCL]~
+   dira[SDA]~                          ' Set SDA to input for ACK/NAK
+   outa[SCL]~~
+   ackbit := ina[SDA]                  ' Sample SDA when SCL is HIGH
+   outa[SCL]~
+   outa[SDA]~                          ' Leave SDA driven LOW
+   dira[SDA]~~
+
+PUB Read(SCL, ackbit): data | SDA
+'' Read in i2c data, Data byte is output MSB first, SDA data line is
+'' valid only while the SCL line is HIGH.  SCL and SDA left in LOW state.
+   SDA := SCL + 1
+   data := 0
+   dira[SDA]~                          ' Make SDA an input
+   repeat 8                            ' Receive data from SDA
+      outa[SCL]~~                      ' Sample SDA when SCL is HIGH
+      data := (data << 1) | ina[SDA]
+      outa[SCL]~
+   outa[SDA] := ackbit                 ' Output ACK/NAK to SDA
+   dira[SDA]~~
+   outa[SCL]~~                         ' Toggle SCL from LOW to HIGH to LOW
+   outa[SCL]~
+   outa[SDA]~                          ' Leave SDA driven LOW
+
+PUB ReadPage(SCL, devSel, addrReg, dataPtr, count) : ackbit
+'' Read in a block of i2c data.  Device select code is devSel.  Device starting
+'' address is addrReg.  Data address is at dataPtr.  Number of bytes is count.
+'' The device select code is modified using the upper 3 bits of the 19 bit addrReg.
+'' Return zero if no errors or the acknowledge bits if an error occurred.
+   devSel |= addrReg >> 15 & %1110
+   Start(SCL)                          ' Select the device & send address
+   ackbit := Write(SCL, devSel | Xmit)
+   ackbit := (ackbit << 1) | Write(SCL, addrReg >> 8 & $FF)
+   ackbit := (ackbit << 1) | Write(SCL, addrReg & $FF)
+   Start(SCL)                          ' Reselect the device for reading
+   ackbit := (ackbit << 1) | Write(SCL, devSel | Recv)
+   repeat count - 1
+      byte[dataPtr++] := Read(SCL, ACK)
+   byte[dataPtr++] := Read(SCL, NAK)
+   Stop(SCL)
+   return ackbit
+
+PUB ReadLong(SCL, devSel, addrReg) : data
+'' Read in a single long of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+'' Note that you can't distinguish between a return value of -1 and true error.
+   if ReadPage(SCL, devSel, addrReg, @data, 4)
+      return -1
+
+PUB WritePage(SCL, devSel, addrReg, dataPtr, count) : ackbit
+'' Write out a block of i2c data.  Device select code is devSel.  Device starting
+'' address is addrReg.  Data address is at dataPtr.  Number of bytes is count.
+'' The device select code is modified using the upper 3 bits of the 19 bit addrReg.
+'' Most devices have a page size of at least 32 bytes, some as large as 256 bytes.
+'' Return zero if no errors or the acknowledge bits if an error occurred.  If
+'' more than 31 bytes are transmitted, the sign bit is "sticky" and is the
+'' logical "or" of the acknowledge bits of any bytes past the 31st.
+   devSel |= addrReg >> 15 & %1110
+   Start(SCL)                          ' Select the device & send address
+   ackbit := Write(SCL, devSel | Xmit)
+   ackbit := (ackbit << 1) | Write(SCL, addrReg >> 8 & $FF)
+   ackbit := (ackbit << 1) | Write(SCL, addrReg & $FF)
+   repeat count                        ' Now send the data
+      ackbit := ackbit << 1 | ackbit & $80000000 ' "Sticky" sign bit
+      ackbit |= Write(SCL, byte[dataPtr++])
+   Stop(SCL)
+   return ackbit
+
+PUB WriteLong(SCL, devSel, addrReg, data)
+'' Write out a single long of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+'' Note that the long word value may not span an EEPROM page boundary.
+   if WritePage(SCL, devSel, addrReg, @data, 4)
+      return true
+   ' james edit - wait for 5ms for page write to complete (80_000 * 5 = 400_000)
+   waitcnt(400_000 + cnt)
+   return false
+
 {
-font0  long
-'part 0   --> 0
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
-  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
-  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
-  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
-  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
-  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
-  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
-  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
-  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
-  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
-  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
-  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-'part 0   --> 1
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
-  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
-  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
-  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
-  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
-  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
-  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
-  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
-  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
-  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
-  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
-  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-'part 1  --> 2
-  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
-  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
-  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
-  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
-  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
-  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
-  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
-  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
-  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
-  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
-  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
-  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
-  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
-  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
-  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-'part 1    --> 3
-  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
-  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
-  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
-  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
-  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
-  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
-  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
-  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
-  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
-  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
-  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
-  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
-  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
-  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
-  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
+
+PUB ReadByte(SCL, devSel, addrReg) : data
+'' Read in a single byte of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+   if ReadPage(SCL, devSel, addrReg, @data, 1)
+      return -1
+
+PUB ReadWord(SCL, devSel, addrReg) : data
+'' Read in a single word of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+   if ReadPage(SCL, devSel, addrReg, @data, 2)
+      return -1
+
+PUB WriteByte(SCL, devSel, addrReg, data)
+'' Write out a single byte of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+   if WritePage(SCL, devSel, addrReg, @data, 1)
+      return true
+   ' james edit - wait for 5ms for page write to complete (80_000 * 5 = 400_000)
+   waitcnt(400_000 + cnt)
+   return false
+
+PUB WriteWord(SCL, devSel, addrReg, data)
+'' Write out a single word of i2c data.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device select code is modified using the
+'' upper 3 bits of the 19 bit addrReg.  This returns true if an error occurred.
+'' Note that the word value may not span an EEPROM page boundary.
+   if WritePage(SCL, devSel, addrReg, @data, 2)
+      return true
+   ' james edit - wait for 5ms for page write to complete (80_000 * 5 = 400_000)
+   waitcnt(400_000 + cnt)
+   return false
+
+PUB WriteWait(SCL, devSel, addrReg) : ackbit
+'' Wait for a previous write to complete.  Device select code is devSel.  Device
+'' starting address is addrReg.  The device will not respond if it is busy.
+'' The device select code is modified using the upper 3 bits of the 18 bit addrReg.
+'' This returns zero if no error occurred or one if the device didn't respond.
+   devSel |= addrReg >> 15 & %1110
+   Start(SCL)
+   ackbit := Write(SCL, devSel | Xmit)
+   Stop(SCL)
+   return ackbit
+
+
+' *************** JAMES'S Extra BITS *********************
+
+PUB devicePresent(SCL,deviceAddress) : ackbit
+  ' send the deviceAddress and listen for the ACK
+   Start(SCL)
+   ackbit := Write(SCL,deviceAddress | 0)
+   Stop(SCL)
+   if ackbit == ACK
+     return true
+   else
+     return false
+
+PUB writeLocation(SCL,device_address, register, value)
+  start(SCL)
+  write(SCL,device_address)
+  write(SCL,register)
+  write(SCL,value)
+  stop (SCL)
+
+PUB readLocation(SCL,device_address, register) : value
+  start(SCL)
+  write(SCL,device_address | 0)
+  write(SCL,register)
+  start(SCL)
+  write(SCL,device_address | 1)
+  value := read(SCL,NAK)
+  stop(SCL)
+  return value
+
 }
-font0  long
-'part 0   --> 0
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
-  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
-  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
-  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
-  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
-  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
-  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
-  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
-  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
-  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
-  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
-  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
-
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $3c3c0000,$18180000,$24240000,$18180000,$00000000,$00000000,$18181818,$18181818
-  long $18181818,$00000000,$18181818,$18181818,$18181818,$00000000,$18181818,$aaaa5555
-  long $00000000,$18180000,$66660000,$66660000,$7c7c1818,$66660000,$6c6c3838,$18180000
-  long $18183030,$18180c0c,$66660000,$18180000,$00000000,$00000000,$00000000,$60600000
-  long $3c3c0000,$18180000,$3c3c0000,$7e7e0000,$30300000,$7e7e0000,$3c3c0000,$7e7e0000
-  long $3c3c0000,$3c3c0000,$00000000,$00000000,$30306060,$00000000,$0c0c0606,$3c3c0000
-  long $3c3c0000,$18180000,$3e3e0000,$3c3c0000,$1e1e0000,$7e7e0000,$7e7e0000,$7c7c0000
-  long $66660000,$7e7e0000,$60600000,$66660000,$06060000,$c6c60000,$66660000,$3c3c0000
-  long $3e3e0000,$3c3c0000,$3e3e0000,$3c3c0000,$7e7e0000,$66660000,$66660000,$c6c60000
-  long $66660000,$66660000,$7e7e0000,$0c0c3c3c,$02020000,$30303c3c,$38381010,$00000000
-  long $0c0c0000,$00000000,$06060000,$00000000,$60600000,$00000000,$70700000,$00000000
-  long $06060000,$18180000,$60600000,$06060000,$1c1c0000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$18180000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$18183030,$18180000,$18180c0c,$36366c6c,$14142a2a
-
-'part 0   --> 1
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
-  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
-  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
-  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
-  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
-  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
-  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
-  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
-  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
-  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
-  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
-  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
-
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $7e7e5a5a,$7e7e3c3c,$7e7e7e7e,$7e7e3c3c,$f8f80000,$1f1f0000,$f8f81818,$1f1f1818
-  long $18181818,$ffff0000,$1f1f1818,$f8f81818,$ffff1818,$ffff0000,$ffff1818,$aaaa5555
-  long $00000000,$18181818,$66666666,$6666ffff,$3c3c0606,$18183636,$1c1c3838,$18181818
-  long $0c0c0c0c,$30303030,$ffff3c3c,$7e7e1818,$00000000,$7e7e0000,$00000000,$18183030
-  long $76766666,$18181c1c,$30306666,$18183030,$3c3c3838,$3e3e0606,$3e3e0606,$30306060
-  long $3c3c6666,$7c7c6666,$18181818,$18181818,$0c0c1818,$00007e7e,$30301818,$30306666
-  long $76766666,$66663c3c,$3e3e6666,$06066666,$66663636,$3e3e0606,$3e3e0606,$06060606
-  long $7e7e6666,$18181818,$60606060,$1e1e3636,$06060606,$fefeeeee,$7e7e6e6e,$66666666
-  long $66666666,$66666666,$66666666,$3c3c0606,$18181818,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$3c3c6666,$18183030,$0c0c0c0c,$0c0c0606,$30303030,$c6c66c6c,$00000000
-  long $30301818,$60603c3c,$3e3e0606,$06063c3c,$7c7c6060,$66663c3c,$7c7c1818,$66667c7c
-  long $3e3e0606,$1c1c0000,$60600000,$36360606,$18181818,$fefe6666,$66663e3e,$66663c3c
-  long $66663e3e,$66667c7c,$66663e3e,$06067c7c,$18187e7e,$66666666,$66666666,$d6d6c6c6
-  long $3c3c6666,$66666666,$30307e7e,$0c0c1818,$18181818,$30301818,$00000000,$14142a2a
-
-'part 1  --> 2
-  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
-  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
-  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
-  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
-  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
-  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
-  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
-  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
-  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
-  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
-  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
-  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
-  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
-  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
-  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
-
-  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
-  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $18187e7e,$18187e7e,$3c3c7e7e,$3c3c7e7e,$1818f8f8,$18181f1f,$0000f8f8,$00001f1f
-  long $18181818,$0000ffff,$18181f1f,$1818f8f8,$0000ffff,$1818ffff,$1818ffff,$aaaa5555
-  long $00000000,$00001818,$00000000,$ffff6666,$3e3e6060,$66660c0c,$6666f6f6,$00000000
-  long $0c0c0c0c,$30303030,$66663c3c,$18181818,$18180000,$00000000,$18180000,$06060c0c
-  long $66666e6e,$18181818,$0c0c1818,$66663030,$7e7e3636,$66666060,$66666666,$0c0c1818
-  long $66666666,$30306060,$18180000,$18180000,$30301818,$7e7e0000,$0c0c1818,$00001818
-  long $06067676,$7e7e6666,$66666666,$66660606,$36366666,$06060606,$06060606,$66667676
-  long $66666666,$18181818,$66666060,$36361e1e,$06060606,$c6c6d6d6,$76767e7e,$66666666
-  long $06063e3e,$36366666,$36363e3e,$60606060,$18181818,$66666666,$3c3c6666,$eeeefefe
-  long $66663c3c,$18181818,$06060c0c,$0c0c0c0c,$30301818,$30303030,$00000000,$00000000
-  long $00000000,$66667c7c,$66666666,$06060606,$66666666,$06067e7e,$18181818,$7c7c6666
-  long $66666666,$18181818,$60606060,$36361e1e,$18181818,$d6d6fefe,$66666666,$66666666
-  long $3e3e6666,$7c7c6666,$06060606,$60603c3c,$18181818,$66666666,$3c3c6666,$7c7cfefe
-  long $3c3c1818,$7c7c6666,$0c0c1818,$18181818,$18181818,$18181818,$00000000,$14142a2a
-
-'part 1    --> 3
-  long $00000000,$00000000,$00000000,$00000000,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f,$0f0f0f0f
-  long $f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$f0f0f0f0,$ffffffff,$ffffffff,$ffffffff,$ffffffff
-  long $00007e7e,$00007e7e,$00001818,$00001818,$18181818,$18181818,$00000000,$00000000
-  long $18181818,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$aaaa5555
-  long $00000000,$00001818,$00000000,$00006666,$00001818,$00006262,$0000dcdc,$00000000
-  long $30301818,$0c0c1818,$00000000,$00000000,$0c0c1818,$00000000,$00001818,$00000202
-  long $00003c3c,$00007e7e,$00007e7e,$00003c3c,$00003030,$00003c3c,$00003c3c,$00000c0c
-  long $00003c3c,$00001c1c,$00001818,$0c0c1818,$00006060,$00000000,$00000606,$00001818
-  long $00007c7c,$00006666,$00003e3e,$00003c3c,$00001e1e,$00007e7e,$00000606,$00007c7c
-  long $00006666,$00007e7e,$00003c3c,$00006666,$00007e7e,$0000c6c6,$00006666,$00003c3c
-  long $00000606,$00006c6c,$00006666,$00003c3c,$00001818,$00007e7e,$00001818,$0000c6c6
-  long $00006666,$00001818,$00007e7e,$3c3c0c0c,$00006060,$3c3c3030,$00000000,$ffff0000
-  long $00000000,$00007c7c,$00003e3e,$00003c3c,$00007c7c,$00003c3c,$00001818,$3e3e6060
-  long $00006666,$00003c3c,$3c3c6060,$00006666,$00003c3c,$0000c6c6,$00006666,$00003c3c
-  long $06060606,$60606060,$00000606,$00003e3e,$00007070,$00007c7c,$00001818,$00006c6c
-  long $00006666,$1e1e3030,$00007e7e,$00003030,$00001818,$00000c0c,$00000000,$00002a2a
-
-  long $FF000000,$FF000000,$FF000000,$FF000000,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f,$FF0f0f0f
-  long $FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFf0f0f0,$FFffffff,$FFffffff,$FFffffff,$FFffffff
-  long $FF007e7e,$FF007e7e,$FF001818,$FF001818,$FF181818,$FF181818,$FF000000,$FF000000
-  long $FF181818,$FF000000,$FF181818,$FF181818,$FF000000,$FF181818,$FF181818,$FFaa5555
-  long $FF000000,$FF001818,$FF000000,$FF006666,$FF001818,$FF006262,$FF00dcdc,$FF000000
-  long $FF301818,$FF0c1818,$FF000000,$FF000000,$FF0c1818,$FF000000,$FF001818,$FF000202
-  long $FF003c3c,$FF007e7e,$FF007e7e,$FF003c3c,$FF003030,$FF003c3c,$FF003c3c,$FF000c0c
-  long $FF003c3c,$FF001c1c,$FF001818,$FF0c1818,$FF006060,$FF000000,$FF000606,$FF001818
-  long $FF007c7c,$FF006666,$FF003e3e,$FF003c3c,$FF001e1e,$FF007e7e,$FF000606,$FF007c7c
-  long $FF006666,$FF007e7e,$FF003c3c,$FF006666,$FF007e7e,$FF00c6c6,$FF006666,$FF003c3c
-  long $FF000606,$FF006c6c,$FF006666,$FF003c3c,$FF001818,$FF007e7e,$FF001818,$FF00c6c6
-  long $FF006666,$FF001818,$FF007e7e,$FF3c0c0c,$FF006060,$FF3c3030,$FF000000,$FFff0000
-  long $FF000000,$FF007c7c,$FF003e3e,$FF003c3c,$FF007c7c,$FF003c3c,$FF001818,$FF3e6060
-  long $FF006666,$FF003c3c,$FF3c6060,$FF006666,$FF003c3c,$FF00c6c6,$FF006666,$FF003c3c
-  long $FF060606,$FF606060,$FF000606,$FF003e3e,$FF007070,$FF007c7c,$FF001818,$FF006c6c
-  long $FF006666,$FF1e3030,$FF007e7e,$FF003030,$FF001818,$FF000c0c,$FF000000,$FF002a2a
-
-' 8 x 16 font - characters 0..256
-'
-' Each long holds four scan lines of a single character. The longs are arranged into
-' groups of 256 which represent all characters (0..256). There are four groups which
-' each contain a vertical part of all characters. They are ordered from top to bottom.
-' bottom.
-
-font1  long
-  long $0082ba00,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
-  long $00000000,$6e660000,$66660000,$18181818,$00000000,$00000000,$18181818,$18181818
-  long $0000ffff,$00000000,$00000000,$00000000,$00000000,$18181818,$18181818,$18181818
-  long $00000000,$18181818,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
-  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
-  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
-  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
-  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
-  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
-  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
-  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
-  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
-  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
-  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
-  long $00000000,$00000000,$2a552a00,$36360000,$061e0000,$061c0000,$06060000,$3c000000
-  long $00000000,$6e660000,$66660000,$24242424,$00000000,$00000000,$24242424,$24242424
-  long $00ff00ff,$ff000000,$00000000,$00000000,$00000000,$24242424,$24242424,$24242424
-  long $00000000,$24242424,$60000000,$06000000,$00000000,$00000000,$38000000,$00000000
-  long $00000000,$18000000,$36000000,$24000000,$18000000,$4e000000,$1c000000,$18000000
-  long $30000000,$0c000000,$00000000,$00000000,$00000000,$00000000,$00000000,$60000000
-  long $18000000,$18000000,$3c000000,$7e000000,$60000000,$7e000000,$3c000000,$7e000000
-  long $3c000000,$3c000000,$00000000,$00000000,$60000000,$00000000,$06000000,$3c000000
-  long $3c000000,$3c000000,$3e000000,$3c000000,$3e000000,$7e000000,$7e000000,$3c000000
-  long $66000000,$7e000000,$60000000,$46000000,$06000000,$42000000,$66000000,$3c000000
-  long $3e000000,$3c000000,$3e000000,$3c000000,$7e000000,$66000000,$66000000,$66000000
-  long $42000000,$66000000,$7e000000,$3c000000,$06000000,$3c000000,$18000000,$00000000
-  long $180c0000,$00000000,$06000000,$00000000,$60000000,$00000000,$38000000,$00000000
-  long $06000000,$18000000,$60000000,$06000000,$1c000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$38000000,$18000000,$1c000000,$4c000000,$aa55aa55
-
-  long $82008282,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
-  long $187e1818,$0066767e,$00183c24,$1f181818,$1f000000,$f8000000,$f8181818,$ff181818
-  long $00000000,$0000ffff,$00000000,$00000000,$00000000,$f8181818,$1f181818,$ff181818
-  long $ff000000,$18181818,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
-  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
-  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
-  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
-  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
-  long $6a7a6262,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
-  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
-  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
-  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
-  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
-  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
-  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
-  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
-  long $00000000,$3c180000,$2a552a55,$0036363e,$0006060e,$001c0606,$001e0606,$003c6666
-  long $187e1818,$0066767e,$00183c24,$20272424,$203f0000,$04fc0000,$04e42424,$00e72424
-  long $00000000,$0000ff00,$ff000000,$00000000,$00000000,$04e42424,$20272424,$00e72424
-  long $00ff0000,$24242424,$0c060c30,$3060300c,$667e0000,$187e3030,$3e0c0c6c,$18180000
-  long $00000000,$18181818,$00003636,$247e7e24,$3c1a5a3c,$18302e6a,$1c363636,$00181818
-  long $0c0c1818,$30301818,$7e182400,$7e181800,$00000000,$00000000,$00000000,$18303060
-  long $66666624,$18181a1c,$38606666,$3c183060,$666c7870,$663e0606,$3e060666,$30306060
-  long $3c666666,$7c666666,$183c1800,$183c1800,$060c1830,$007e0000,$6030180c,$38606666
-  long $76766666,$7e666666,$3e666666,$06060666,$66666666,$3e060606,$3e060606,$76060666
-  long $7e666666,$18181818,$60606060,$0e1e3666,$06060606,$667e7e66,$7e6e6e66,$66666666
-  long $3e666666,$66666666,$3e666666,$3c060666,$18181818,$66666666,$24246666,$66666666
-  long $183c2466,$183c3c66,$18306060,$0c0c0c0c,$180c0c06,$30303030,$0042663c,$00000000
-  long $00000030,$603c0000,$663e0606,$663c0000,$667c6060,$663c0000,$1e0c0c6c,$665c0000
-  long $663e0606,$181c0018,$60600060,$36660606,$18181818,$fe6a0000,$663e0000,$663c0000
-  long $663e0000,$667c0000,$663e0000,$663c0000,$0c3e0c0c,$66660000,$66660000,$66660000
-  long $66660000,$66660000,$607e0000,$0c180c0c,$18181818,$30183030,$0000327e,$aa55aa55
-
-  long $82820082,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
-  long $007e0018,$18181818,$30303078,$0000001f,$1818181f,$181818f8,$000000f8,$181818ff
-  long $00000000,$00000000,$0000ffff,$ff000000,$00000000,$181818f8,$1818181f,$000000ff
-  long $181818ff,$18181818,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
-  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
-  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
-  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
-  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
-  long $3c62027a,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
-  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
-  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
-  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
-  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
-  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
-  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
-  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
-  long $00000000,$00183c7e,$2a552a55,$30303078,$18381878,$58385838,$18381878,$00000000
-  long $007e0018,$18181818,$30303078,$00003f20,$24242720,$2424e404,$0000fc04,$2424e700
-  long $00000000,$00000000,$0000ff00,$00ff0000,$00000000,$2424e404,$24242720,$0000ff00
-  long $2424e700,$24242424,$7e006030,$7e00060c,$66666666,$0c0c7e18,$3a6c0c0c,$00000000
-  long $00000000,$18180018,$00000000,$24247e7e,$183c5a58,$7256740c,$5c367656,$00000000
-  long $3018180c,$0c181830,$0024187e,$0018187e,$18383800,$0000007e,$3c180000,$06060c0c
-  long $18246666,$7e181818,$7e06060c,$3c666060,$60607e66,$3c666060,$3c666666,$0c0c1818
-  long $3c666666,$3c666060,$3c180000,$18383800,$6030180c,$00007e00,$060c1830,$18180018
-  long $3c660676,$66666666,$3e666666,$3c660606,$3e666666,$7e060606,$06060606,$7c666666
-  long $66666666,$7e181818,$3c666060,$4666361e,$7e060606,$66666666,$66667676,$3c666666
-  long $06060606,$3c766e66,$4666361e,$3c666060,$18181818,$3c666666,$1818183c,$42667e7e
-  long $4266243c,$18181818,$7e06060c,$3c0c0c0c,$60603030,$3c303030,$00000000,$fe000000
-  long $00000000,$7c66667c,$3e666666,$3c660606,$7c666666,$3c66067e,$0c0c0c0c,$3c063c66
-  long $66666666,$7e181818,$60606060,$66361e1e,$7e181818,$c6c6d6d6,$66666666,$3c666666
-  long $063e6666,$607c6666,$06060606,$3c66300c,$386c0c0c,$7c666666,$183c3c66,$247e7e66
-  long $66663c3c,$607c6666,$7e060c30,$380c0c18,$18181818,$1c303018,$00000000,$aa55aa55
-
-  long $00ba8200,$00000000,$00002a55,$00000030,$00000018,$00000058,$00000018,$00000000
-  long $00000000,$00000078,$00000030,$00000000,$18181818,$18181818,$00000000,$18181818
-  long $00000000,$00000000,$00000000,$000000ff,$ffff0000,$18181818,$18181818,$00000000
-  long $18181818,$18181818,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000018,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000018,$0000000c,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$000000fe
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00003c66
-  long $00000000,$00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000606,$00006060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00003c66,$00000000,$00000000,$00000000,$00000000,$00000000,$aa55aa55
-  long $ff000000,$ff000000,$ff002a55,$ff000030,$ff000018,$ff000058,$ff000018,$ff000000
-  long $ff000000,$ff000078,$ff000030,$00000000,$24242424,$24242424,$00000000,$24242424
-  long $00000000,$00000000,$00000000,$000000ff,$ff00ff00,$24242424,$24242424,$00000000
-  long $24242424,$24242424,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff00000c,$ff000000,$ff000018,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000018,$ff00000c,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff0000fe
-  long $ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff003c66
-  long $ff000000,$ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000606,$ff006060,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000
-  long $ff000000,$ff003c66,$ff000000,$ff000000,$ff000000,$ff000000,$ff000000,$ff55aa55
-
-font2    long
-  long $00000000,$817e0000,$ff7e0000,$00000000,$00000000,$18000000,$18000000,$00000000
-  long $ffffffff,$00000000,$ffffffff,$70780000,$663c0000,$ccfc0000,$c6fe0000,$18000000
-  long $07030100,$70604000,$3c180000,$66660000,$dbfe0000,$06633e00,$00000000,$3c180000
-  long $3c180000,$18180000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$3c180000,$66666600,$36000000,$633e1818,$00000000,$361c0000,$0c0c0c00
-  long $18300000,$180c0000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $663c0000,$1c180000,$633e0000,$633e0000,$38300000,$037f0000,$061c0000,$637f0000
-  long $633e0000,$633e0000,$00000000,$00000000,$60000000,$00000000,$06000000,$633e0000
-  long $3e000000,$1c080000,$663f0000,$663c0000,$361f0000,$667f0000,$667f0000,$663c0000
-  long $63630000,$183c0000,$30780000,$66670000,$060f0000,$e7c30000,$67630000,$633e0000
-  long $663f0000,$633e0000,$663f0000,$633e0000,$dbff0000,$63630000,$c3c30000,$c3c30000
-  long $c3c30000,$c3c30000,$c3ff0000,$0c3c0000,$01000000,$303c0000,$63361c08,$00000000
-  long $00180c0c,$00000000,$06070000,$00000000,$30380000,$00000000,$361c0000,$00000000
-  long $06070000,$18180000,$60600000,$06070000,$181c0000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$0c080000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$18700000,$18180000,$180e0000,$3b6e0000,$00000000
-  long $663c0000,$00330000,$0c183000,$361c0800,$00330000,$180c0600,$1c361c00,$00000000
-  long $361c0800,$00630000,$180c0600,$00660000,$663c1800,$180c0600,$08006300,$001c361c
-  long $00060c18,$00000000,$367c0000,$361c0800,$00630000,$180c0600,$331e0c00,$180c0600
-  long $00630000,$3e006300,$63006300,$7e181800,$26361c00,$66c30000,$66663f00,$18d87000
-  long $060c1800,$0c183000,$060c1800,$060c1800,$3b6e0000,$63003b6e,$36363c00,$36361c00
-  long $0c0c0000,$00000000,$00000000,$43030300,$43030300,$18180000,$00000000,$00000000
-  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$00000000
-  long $00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$18181818,$00000000
-  long $18181818,$18181818,$00000000,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
-  long $6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$18181818
-  long $6c6c6c6c,$00000000,$00000000,$6c6c6c6c,$18181818,$00000000,$00000000,$6c6c6c6c
-  long $18181818,$18181818,$00000000,$ffffffff,$00000000,$0f0f0f0f,$f0f0f0f0,$ffffffff
-  long $00000000,$331e0000,$637f0000,$00000000,$7f000000,$00000000,$00000000,$00000000
-  long $7e000000,$1c000000,$361c0000,$0c780000,$00000000,$c0000000,$0c380000,$3e000000
-  long $00000000,$00000000,$0c000000,$30000000,$d8700000,$18181818,$00000000,$00000000
-  long $36361c00,$00000000,$00000000,$3030f000,$36361b00,$0c1b0e00,$00000000,$00000000
-
-  long $00000000,$bd8181a5,$c3ffffdb,$7f7f7f36,$7f3e1c08,$e7e73c3c,$ffff7e3c,$3c180000
-  long $c3e7ffff,$42663c00,$bd99c3ff,$331e4c58,$3c666666,$0c0c0cfc,$c6c6c6fe,$e73cdb18
-  long $1f7f1f0f,$7c7f7c78,$1818187e,$66666666,$d8dedbdb,$6363361c,$00000000,$1818187e
-  long $1818187e,$18181818,$7f301800,$7f060c00,$03030000,$ff662400,$3e1c1c08,$3e3e7f7f
-  long $00000000,$18183c3c,$00000024,$36367f36,$603e0343,$18306343,$3b6e1c36,$00000006
-  long $0c0c0c0c,$30303030,$ff3c6600,$7e181800,$00000000,$7f000000,$00000000,$18306040
-  long $dbdbc3c3,$1818181e,$0c183060,$603c6060,$7f33363c,$603f0303,$633f0303,$18306060
-  long $633e6363,$607e6363,$00001818,$00001818,$060c1830,$00007e00,$6030180c,$18183063
-  long $7b7b6363,$7f636336,$663e6666,$03030343,$66666666,$161e1646,$161e1646,$7b030343
-  long $637f6363,$18181818,$30303030,$1e1e3666,$06060606,$c3dbffff,$737b7f6f,$63636363
-  long $063e6666,$63636363,$363e6666,$301c0663,$18181899,$63636363,$c3c3c3c3,$dbc3c3c3
-  long $18183c66,$183c66c3,$0c183061,$0c0c0c0c,$1c0e0703,$30303030,$00000000,$00000000
-  long $00000000,$3e301e00,$66361e06,$03633e00,$33363c30,$7f633e00,$060f0626,$33336e00
-  long $666e3606,$18181c00,$60607000,$1e366606,$18181818,$dbff6700,$66663b00,$63633e00
-  long $66663b00,$33336e00,$666e3b00,$06633e00,$0c0c3f0c,$33333300,$c3c3c300,$c3c3c300
-  long $3c66c300,$63636300,$18337f00,$180e1818,$18001818,$18701818,$00000000,$63361c08
-  long $03030343,$33333300,$7f633e00,$3e301e00,$3e301e00,$3e301e00,$3e301e00,$0606663c
-  long $7f633e00,$7f633e00,$7f633e00,$18181c00,$18181c00,$18181c00,$6363361c,$6363361c
-  long $3e06667f,$d8dc7600,$337f3333,$63633e00,$63633e00,$63633e00,$33333300,$33333300
-  long $63636300,$63636363,$63636363,$030303c3,$06060f06,$18ff183c,$f666463e,$187e1818
-  long $3e301e00,$18181c00,$63633e00,$33333300,$66663b00,$7b7f6f67,$007e007c,$003e001c
-  long $060c0c00,$037f0000,$607f0000,$0c183363,$0c183363,$18181800,$1b366c00,$6c361b00
-  long $22882288,$55aa55aa,$eebbeebb,$18181818,$1f181818,$1f181f18,$6f6c6c6c,$7f000000
-  long $1f181f00,$6f606f6c,$6c6c6c6c,$6f607f00,$7f606f6c,$7f6c6c6c,$1f181f18,$1f000000
-  long $f8181818,$ff181818,$ff000000,$f8181818,$ff000000,$ff181818,$f818f818,$ec6c6c6c
-  long $fc0cec6c,$ec0cfc00,$ff00ef6c,$ef00ff00,$ec0cec6c,$ff00ff00,$ef00ef6c,$ff00ff18
-  long $ff6c6c6c,$ff00ff00,$ff000000,$fc6c6c6c,$f818f818,$f818f800,$fc000000,$ff6c6c6c
-  long $ff18ff18,$1f181818,$f8000000,$ffffffff,$ff000000,$0f0f0f0f,$f0f0f0f0,$00ffffff
-  long $1b3b6e00,$331b3333,$03030363,$3636367f,$180c0663,$1b1b7e00,$66666666,$18183b6e
-  long $66663c18,$7f636336,$36636363,$667c3018,$dbdb7e00,$dbdb7e60,$063e0606,$63636363
-  long $7f00007f,$187e1818,$30603018,$0c060c18,$181818d8,$18181818,$7e001818,$003b6e00
-  long $0000001c,$18000000,$00000000,$37303030,$00363636,$001f1306,$3e3e3e3e,$00000000
-
-  long $00000000,$7e818199,$7effffe7,$081c3e7f,$00081c3e,$3c1818e7,$3c18187e,$0000183c
-  long $ffffe7c3,$003c6642,$ffc399bd,$1e333333,$18187e18,$070f0e0c,$67e7e6c6,$1818db3c
-  long $0103070f,$40607078,$00183c7e,$66660066,$d8d8d8d8,$63301c36,$7f7f7f7f,$7e183c7e
-  long $18181818,$183c7e18,$00001830,$00000c06,$00007f03,$00002466,$007f7f3e,$00081c1c
-  long $00000000,$18180018,$00000000,$36367f36,$3e636160,$6163060c,$6e333333,$00000000
-  long $30180c0c,$0c183030,$0000663c,$00001818,$18181800,$00000000,$18180000,$0103060c
-  long $3c66c3c3,$7e181818,$7f630306,$3e636060,$78303030,$3e636060,$3e636363,$0c0c0c0c
-  long $3e636363,$1e306060,$00181800,$0c181800,$6030180c,$0000007e,$060c1830,$18180018
-  long $3e033b7b,$63636363,$3f666666,$3c664303,$1f366666,$7f664606,$0f060606,$5c666363
-  long $63636363,$3c181818,$1e333333,$67666636,$7f664606,$c3c3c3c3,$63636363,$3e636363
-  long $0f060606,$3e7b6b63,$67666666,$3e636360,$3c181818,$3e636363,$183c66c3,$6666ffdb
-  long $c3c3663c,$3c181818,$ffc38306,$3c0c0c0c,$40607038,$3c303030,$00000000,$00000000
-  long $00000000,$6e333333,$3e666666,$3e630303,$6e333333,$3e630303,$0f060606,$3e333333
-  long $67666666,$3c181818,$60606060,$6766361e,$3c181818,$dbdbdbdb,$66666666,$3e636363
-  long $3e666666,$3e333333,$0f060606,$3e63301c,$386c0c0c,$6e333333,$183c66c3,$66ffdbdb
-  long $c3663c18,$7e636363,$7f63060c,$70181818,$18181818,$0e181818,$00000000,$007f6363
-  long $303c6643,$6e333333,$3e630303,$6e333333,$6e333333,$6e333333,$6e333333,$60303c66
-  long $3e630303,$3e630303,$3e630303,$3c181818,$3c181818,$3c181818,$6363637f,$6363637f
-  long $7f660606,$ee3b1b7e,$73333333,$3e636363,$3e636363,$3e636363,$6e333333,$6e333333
-  long $7e636363,$3e636363,$3e636363,$18187ec3,$3f670606,$181818ff,$cf666666,$18181818
-  long $6e333333,$3c181818,$3e636363,$6e333333,$66666666,$63636373,$00000000,$00000000
-  long $3e636303,$00030303,$00606060,$60d97306,$7c697366,$183c3c3c,$00006c36,$00001b36
-  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
-  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
-  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
-  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
-  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
-  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
-  long $6e3b1b1b,$33636363,$03030303,$36363636,$7f63060c,$0e1b1b1b,$06063e66,$18181818
-  long $7e183c66,$1c366363,$77363636,$3c666666,$00007edb,$03067ecf,$380c0606,$63636363
-  long $007f0000,$ff000018,$7e000c18,$7e003018,$18181818,$0e1b1b1b,$00181800,$00003b6e
-  long $00000000,$00000018,$00000018,$383c3636,$00000000,$00000000,$003e3e3e,$00000000
-
-  long $00ffff00,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $ffffffff,$00000000,$ffffffff,$00000000,$00000000,$00000000,$00000003,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$0000003e,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00001818,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$0000000c,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00007030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000ff00
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$001e3330
-  long $00000000,$00000000,$003c6666,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $000f0606,$00783030,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$001f3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00003e60,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$0000003c
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $001e3060,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000e1b
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$0000f830,$00006060,$00000000,$00000000,$00000000
-  long $22882288,$55aa55aa,$eebbeebb,$18181818,$18181818,$18181818,$6c6c6c6c,$6c6c6c6c
-  long $18181818,$6c6c6c6c,$6c6c6c6c,$6c6c6c6c,$00000000,$00000000,$00000000,$18181818
-  long $00000000,$00000000,$18181818,$18181818,$00000000,$18181818,$18181818,$6c6c6c6c
-  long $00000000,$6c6c6c6c,$00000000,$6c6c6c6c,$6c6c6c6c,$00000000,$6c6c6c6c,$00000000
-  long $00000000,$18181818,$6c6c6c6c,$00000000,$00000000,$18181818,$6c6c6c6c,$6c6c6c6c
-  long $18181818,$00000000,$18181818,$ffffffff,$ffffffff,$0f0f0f0f,$f0f0f0f0,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000003,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$18181818,$00000000,$00000000,$00000000
-  long $00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000,$00000000

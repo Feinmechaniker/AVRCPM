@@ -2,25 +2,48 @@
 Iamthemagicnumber=1
 
 [Main]
-SelectedTab=3
-TreePath=C:\
-SearchPath=B:\Projekte\02 AVR CPM\propeller
-NumSubs=4
+SelectedTab=0
+NumSubs=1
 OverrideOptimisation=0
 OptimiseFlags=0
+TreePath=C:\
 
 [File1]
-FileName=B:\Projekte\91_VT100\Basic_I2C_Driver.spin
-TopLine=52
+FileName=B:\Projekte\02 AVR CPM\propeller\VT100_VGA_color.spin
+TopLine=247
 
 [File2]
-FileName=B:\Projekte\91_VT100\eeprom.spin
+FileName=B:\Projekte\02 AVR CPM\propeller\eeprom.spin
 TopLine=1
 
 [File3]
-FileName=B:\Projekte\02 AVR CPM\propeller\VT100_VGA_color.spin
+FileName=B:\Projekte\02 AVR CPM\propeller\fonts.spin
 TopLine=1
 
 [File4]
-FileName=B:\Projekte\91_VT100\VT100_VGA_color.spin
+FileName=B:\Projekte\02 AVR CPM\propeller\fonts-lin.spin
 TopLine=1
+
+[File5]
+FileName=B:\Projekte\02 AVR CPM\propeller\FullDuplexSerial.spin
+TopLine=1
+
+[File6]
+FileName=B:\Projekte\02 AVR CPM\propeller\keyb-DE.spin
+TopLine=1
+
+[File7]
+FileName=B:\Projekte\02 AVR CPM\propeller\VGA_640.spin
+TopLine=1
+
+[File8]
+FileName=B:\Projekte\02 AVR CPM\propeller\VGA_HiRes_Text_Color.spin
+TopLine=1
+
+[File9]
+FileName=BB:\Projekte\02 AVR CPM\propeller\vgacolour.spin
+TopLine=1
+
+[File10]
+FileName=B:\Projekte\02 AVR CPM\propeller\VT100_VGA_color.spin
+TopLine=169
