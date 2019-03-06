@@ -12,7 +12,7 @@ Var i : Byte;
 
 Begin
  clrscr;
- writeln('Print selected Charater Set'); writeln;
+ writeln('Print selected Character Set'); writeln;
 
  write(char(15));                                                 { switch SI }
  Writeln('select G0 (SI)'); writeln;
@@ -40,4 +40,4 @@ Begin
 
  write(char(15));                                                 { switch SI }
 End.
-
+
