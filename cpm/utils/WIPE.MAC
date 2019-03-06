@@ -1,0 +1,390 @@
+; This is a utility program to delete all data on a disk drive.
+; The deletion is done by filling all directory sectors with 0E5h.
+;
+; The program can be used, to init a RAM disk after cold start.
+;
+;    Copyright (C) 2010 Leo C.
+;
+;    This program is free software: you can redistribute it and/or modify
+;    it under the terms of the GNU General Public License as published by
+;    the Free Software Foundation, either version 3 of the License, or
+;    (at your option) any later version.
+;
+;    This program is distributed in the hope that it will be useful,
+;    but WITHOUT ANY WARRANTY; without even the implied warranty of
+;    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;    GNU General Public License for more details.
+;
+;    You should have received a copy of the GNU General Public License
+;    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+;
+;    $Id: WIPE.MAC 93 2014-01-03 16:32:32Z rapid $
+
+	.Z80
+
+; BIOS functions
+
+biosofs	equ	-3		;offset
+
+wbootf	equ	biosofs+3*1	;warm boot function
+homef	equ	biosofs+3*8	;disk home function
+seldskf	equ	biosofs+3*9	;select disk function
+settrkf	equ	biosofs+3*10	;set track function
+setsecf	equ	biosofs+3*11	;set sector function
+setdmaf	equ	biosofs+3*12	;set dma function
+readf	equ	biosofs+3*13	;read disk function
+writef	equ	biosofs+3*14	;write disk function
+sectranf equ	biosofs+3*16	;sector translate
+
+; BDOS functions
+
+pstring	equ	9
+rstring	equ	10
+seldsk	equ	14
+
+cdisk	equ	4
+bdos	equ	5
+cr	equ	13
+lf	equ	10
+tab	equ	9
+
+buf	equ	80h
+
+
+	aseg
+	org	100h
+
+	jp	start
+
+rev:	db	'$Id: WIPE.MAC 93 2014-01-03 16:32:32Z rapid $'
+usage:	db	'Usage: WIPE [Options] d:',cr,lf
+	db	'Delete all files on drive d: in all user areas.',cr,lf
+	db	cr,lf
+	db	'Options:',cr,lf
+	db	'  -Y   Don''t ask for confirmation.',cr,lf
+	db	'$'
+mdrvinval:
+	db	'Invalid drive: '
+minvch:	db	'?:'			;filled in
+	db	cr,lf,'$'
+mnodrive:
+	db	'Can not select drive '
+mnodrch:db	'?:'			;filled in
+	db	cr,lf,'$'
+mnowipe:db	'Nothing done.'
+mcrlf:	db	cr,lf,'$'
+mconfirm:
+	db	'Delete all files in all user areas on drive '
+mcfmchar:
+	db	'?: (Y/N)?','$'
+
+drive:	db	0
+optyes:
+	db	0
+transtbl:
+	ds	2
+ccpret:	ds	2
+conbuf:	db	conlen
+consiz:	ds	1
+conlin:	ds	15
+conlen	equ	$-consiz
+
+; Get next character from commandline
+
+getchar:
+	ld	a,(hl)
+	inc	hl
+	or	a			;eol?
+	ret
+	
+; Skip white space
+
+skipblank:
+	ld	a,(hl)
+	inc	hl
+	or	a			;eol?
+	ret	z
+	cp	' '
+	jp	z,skipblank
+	cp	tab
+	jp	z,skipblank
+	ret
+
+; Setup command line. (Terminate with 0)
+
+setupcmdl:
+	ld	hl,buf
+	ld	e,(hl)			; get number of characters on command line
+	ld	d,0
+	inc	hl
+	ex	de,hl
+	add	hl,de
+	ld	(hl),0
+	ex	de,hl
+	ret
+
+; Parse commandline
+
+parsecmd:	
+	call	skipblank
+	jp	z,pusage		; empty command line
+	cp	'-'
+	jp	nz,pcmdarg		; no option, parse agrument
+	call	getchar
+	cp	'Y'
+	jp	nz,pusage
+	ld	(optyes),a
+	call	skipblank
+	jp	z,pusage		; no argument
+pcmdarg:
+	ld	b,'?'			; get argument (disk drive)
+	cp	' '			; non printable char?
+	jp	c,pcmd1
+	ld	b,a
+pcmd1:
+	call	getchar
+	cp	':'
+	ret	nz
+	ld	a,b
+	ld	(drive),a
+	call	skipblank
+	jp	nz,pusage
+	ret
+	
+	
+; Fill buffer with E5
+	
+fillbuf:
+	ld	hl,buf
+	ld	c,128
+	ld	a,0e5h
+fbl:
+	ld	(hl),a
+	inc	hl
+	dec	c
+	jp	nz,fbl
+	ret
+	
+; Print messages on console
+
+pusage:	ld	de,usage		; address of usage text
+	jp	pmsgexit
+	
+pdrvinval:
+	ld	(minvch),a
+	ld	de,mdrvinval		; 
+	jp	pmsgexit
+
+pnodrive:
+	ld	a,(drive)
+	ld	(mnodrch),a
+	ld	de,mnodrive		; 
+	jp	pmsgexit
+	
+; Ask for confirmation.
+
+confirm:
+	ld	a,(drive)
+	ld	(mcfmchar),a
+	ld	de,mconfirm		; 
+	ld	c,pstring		; CP/M command for print
+	call	bdos
+	ld	de,conbuf
+	ld	c,rstring
+	call	bdos
+	ld	de,mcrlf
+	ld	c,pstring		; CP/M command for print
+	call	bdos
+	ld	a,(conlin)		; first char
+	and	05fh			; toupper()
+	cp	'Y'
+	ret	z
+	ld	de,mnowipe
+pmsgexit:	
+	ld	c,pstring		; CP/M command for print
+	call	bdos			; print it
+
+; Return to CCP (no warmboot).
+
+exitccp:
+	ld	hl,(ccpret)
+	jp	(hl)
+	
+; Call BIOS functions
+
+bseldsk:
+	ld	hl,(1)
+	ld	de,seldskf
+	add	hl,de
+	jp	(hl)	
+bsetdma:
+	ld	hl,(1)
+	ld	de,setdmaf
+	add	hl,de
+	jp	(hl)	
+bsettrk:
+	ld	hl,(1)
+	ld	de,settrkf
+	add	hl,de
+	jp	(hl)	
+bsetsec:
+	call	bsectran
+	ld	c,l
+	ld	b,0
+	ld	hl,(1)
+	ld	de,setsecf
+	add	hl,de
+	jp	(hl)	
+bwrite:
+	ld	c,1			;write type = dir
+	ld	hl,(1)
+	ld	de,writef
+	add	hl,de
+	jp	(hl)
+bsectran:
+	ld	hl,(1)
+	ld	de,sectranf
+	add	hl,de
+	ex	de,hl
+	ld	hl,(transtbl)
+	ex	de,hl
+	jp	(hl)	
+	
+; The main function	
+
+start:	
+	pop	hl			; Get return address;
+	ld	(ccpret),hl		; and save it for later
+	ld	sp,stack		; Setup local stack.
+	call	setupcmdl
+	call	parsecmd
+	ld	a,(drive)		; Was a drive specified?
+	or	a
+	jp	z,pusage		; If not, print message and return.
+	cp	'A'			; valid drive letter?
+	jp	c,pdrvinval
+	cp	'P'+1
+	jp	nc,pdrvinval
+		
+	ld	a,(optyes)		; Was 'Y' option given?
+	or	a
+	call	z,confirm		; If no, ask for confirmation.
+	
+; Command is ok and confirmed, check drive
+
+	ld	a,(drive)		; Select the requested drive.
+	sub	'A'			; Use the BIOS function for this,
+	ld	c,a			; as BDOS would initialize the drive
+	call	bseldsk			; and try to read the (broken) directory.
+	ld	a,l
+	or	h
+	jp	nz,getdpb
+	
+	ld	a,(cdisk)		; Reselect current disk drive.
+	and	0fh
+	ld	c,a
+	call	bseldsk
+	jp	pnodrive		; Msg, and return to CCP.
+
+; Drive exists. Get disk parameter
+getdpb:	
+	ld	a,(hl)			; sector translation table
+	ld	(transtbl),a
+	inc	hl
+	ld	a,(hl)
+	ld	(transtbl+1),a
+	dec	hl
+	ld	de,10			; dpb ofset
+	add	hl,de
+	ld	e,(hl)
+	inc	hl
+	ld	d,(hl)			; de = dpb of selected drive
+	
+	ld	hl,13			; ofset to # of reserved tracks
+	add	hl,de
+	ld	c,(hl)			; Start track
+	inc	hl
+	ld	b,(hl)			; bc = track
+
+	push	bc			; save for later
+	
+; Compute number of sectors to fill.
+		
+	ld	hl,7			; drm ofset
+	add	hl,de
+	ld	a,(hl)			; get drm (# of dir entries - 1)
+	add	a,3+1			; round up
+	ld	c,a
+	inc	hl
+	ld	a,(hl)			; Each sector holds 4 dir entries
+	adc	a,0
+	rra		
+	ld	b,a
+	ld	a,c
+	rra
+	ld	c,a
+	ld	a,b
+	or	a			; clear carry
+	rra
+	ld	b,a
+	ld	a,c			
+	rra
+	ld	c,a			; c = # of sectors ((drm+1+3)/4)
+
+; Get sectors per track.
+
+	ld	a,(de)			; b = sectors per track
+	ld	b,a
+	push	bc		
+
+; Init fill loop.
+
+	call	fillbuf	
+	ld	bc,buf
+	call	bsetdma
+	
+	ld	bc,0			; c  = sec
+	pop	de			; d  = spt, e = nsec
+	pop	hl			; hl = track
+nxtrk:
+	push	hl			; track
+	push	de			; spt, nsec
+	push	bc			; sec
+	ld	b,h	
+	ld	c,l
+	call	bsettrk			;
+	pop	bc
+	pop	de
+nxtsec:
+	push	de			;
+	push	bc
+	call	bsetsec
+	call	bwrite
+	pop	bc			;sec
+	pop	de			;d = spt, e = nsec
+	dec	e
+	jp	z,done
+	
+	inc	c			;next sector
+	ld	a,c
+	cp	d			;if sector >= spt then change tracks
+	jp	c,nxtsec
+	
+	ld	c,b			;sec = 0
+	pop	hl
+	inc	hl			;next track
+	jp	nxtrk
+
+; All directory sectors filled.
+done:
+	pop	hl
+	jp	0			; Boot (reinits disks)
+
+progend:ds	(($+255) and 0ff00h)-$	; Fill rest of page with zero
+
+stack	equ	progend+40
+
+	end
+
+; vim:set ts=8 noet nowrap
+

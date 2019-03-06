@@ -1,0 +1,104 @@
+; This is a utility program to control the timer of the AVR CP/M emulator.
+; This file is stolen from the SIMH AltairZ80 Simulator.
+;
+; changed to assemble with z80asm
+; 
+	.z80				; mnemonics only
+
+TIMERCTL	equ 040h
+DEBUGPORT	equ 04FH
+
+printStringCmd	equ	09h
+bdos		equ	5
+cr		equ	13
+lf		equ	10
+cmdLine		equ	80h
+starttimercmd	equ	1
+quitTimerCmd	equ	2
+printTimerCmd	equ	15
+uptimeCmd	equ	16
+
+StopTraceCmd	equ	00h
+StartTraceCmd	equ	01h
+PrintStackCmd	equ	02h
+
+	aseg
+	org	100h
+
+	jp	start
+
+usage:	db	'Usage: ACT S|P|B|Q|U|T|N',cr,lf
+	db	'  S = (Re)Start the timer',cr,lf
+	db	'  P = Print elapsed time since last S or Q command',cr,lf
+	db	'  B = Print elapsed time for simple benchmark loop. wait < 60s',cr,lf
+	db	'         ATmega88 with 20MHz D0 = 035,999s',cr,lf
+	db	'  Q = Print the timer, then restart it',cr,lf
+	db	'  U = Print uptime',cr,lf
+	db	'  T = Trace enable',cr,lf
+	db	'  N = Trace disable',cr,lf
+	db	'  K = Print stack usage',cr,lf
+	db	'$',1AH
+
+start:	ld	a,(cmdLine)		; get number of characters on command line
+	or	a
+	jp	z,pusage		; print usage, if command line empty
+	ld	a,(cmdLine+2)		; get first character
+	cp	'B'
+	jp	z,bench
+	ld	b,a
+	ld	hl,table		; <HL> points to (letter, port, command)
+again:	ld	a,(hl)			; compare command line letter with table entry
+	inc	hl			; point to command
+	cp	b
+	jp	z,found			; if found
+	inc	hl			; otherwise proceed to next entry
+	inc	hl
+	cp	'$'			; end of table?
+	jp	nz,again		; try next character
+
+pusage:	ld	de,usage		; address of usage text
+	ld	c,printStringCmd	; CP/M command for print
+	jp	bdos			; print it, get ret from bdos
+
+found:	ld	a,(hl)			; get timer command
+	inc	hl
+	ld	(port),a
+	ld	a,(hl)
+	db	0D3H			;"out (port),a"
+port:	db	0
+	ret
+
+bench:
+	ld	a,startTimerCmd
+	out	(TIMERCTL),a		; start timer
+; loop starts here
+	ld	c,10
+l1:	ld	b,0
+l2:	ld	a,0
+l3:	dec	a
+	jp	nz,l3			; 256 x
+	dec	b
+	jp	nz,l2			; 256 x
+	dec	c
+	jp	nz,l1			; 10 x
+; loop ends here
+	ld	a,printTimerCmd
+	out	(TIMERCTL),a		; print elapsed time
+	ret				; and done
+
+table:
+	db	'N',DEBUGPORT,StopTraceCmd
+	db	'T',DEBUGPORT,StartTraceCmd
+	db	'K',DEBUGPORT,PrintStackCmd
+	db	'S',TIMERCTL,starttimercmd
+	db	'P',TIMERCTL,printTimerCmd
+	db	'Q',TIMERCTL,quitTimerCmd
+	db	'U',TIMERCTL,uptimeCmd
+	db	'$'			; Stop mark
+
+timend	equ	$
+	ds	((timend+127) and 0ff80h)-timend	; fill remainder with zeroes
+
+	end
+; vim:set ts=8 noet nowrap
+
