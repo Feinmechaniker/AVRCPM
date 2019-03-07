@@ -1,0 +1,123 @@
+Partlist
+
+Exported from Aeternum_V1.sch at 07.03.2019 10:06
+
+EAGLE Version 9.1.1 Copyright (c) 1988-2018 Autodesk, Inc.
+
+Assembly variant: 
+
+Part     Value              Device           Package                   Library                            Sheet
+
+C1       10µ                CPOL-EUE2-5      E2-5                      rcl                                1
+C2       100n               C-EU025-024X044  C025-024X044              rcl                                1
+C3       27p                C-EU025-024X044  C025-024X044              rcl                                1
+C4       27p                C-EU025-024X044  C025-024X044              rcl                                1
+C5       100n               C-EU025-024X044  C025-024X044              rcl                                1
+C6       100n               C-EU025-024X044  C025-024X044              rcl                                1
+C7       4,7µ               CPOL-EUE2-5      E2-5                      rcl                                1
+C8       100n               C-EU025-024X044  C025-024X044              rcl                                1
+C9       100n               C-EU025-024X044  C025-024X044              rcl                                1
+C10      100n               C-EU025-024X044  C025-024X044              rcl                                1
+C11      100n               C-EU025-024X044  C025-024X044              rcl                                1
+C12      6-20 pF            C-TRIMMTZ03      CTRIMTZ03                 rcl                                2
+C13      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C14      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C15      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C16      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C17      18pF               CAP0402-CAP      0402-CAP                  SparkFun                           2
+C18      18pF               CAP0402-CAP      0402-CAP                  SparkFun                           2
+C19      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C20      100n               C-EU025-024X044  C025-024X044              rcl                                2
+C21      100n               C-EUC0805        C0805                     rcl                                3
+C22      10n                C-EU025-024X044  C025-024X044              rcl                                4
+C23      100n               C-EU025-024X044  C025-024X044              rcl                                4
+C24      10µ                CPOL-EUE2-5      E2-5                      rcl                                4
+C25      100n               C-EU025-024X044  C025-024X044              rcl                                4
+C26      100n               C-EU025-024X044  C025-024X044              rcl                                4
+C27      10µ                CPOL-EUE2-5      E2-5                      rcl                                4
+C28      10µ                CPOL-EUE2-5      E2-5                      rcl                                4
+C29      100n               C-EU025-024X044  C025-024X044              rcl                                4
+C30      10µ                CPOL-EUE2.5-5    E2,5-5                    rcl                                5
+C31      10µ                CPOL-EUE2.5-5    E2,5-5                    rcl                                5
+C32      33n                C-EU025-024X044  C025-024X044              rcl                                5
+C33      10n                C-EU025-024X044  C025-024X044              rcl                                5
+C34      33n                C-EU025-024X044  C025-024X044              rcl                                5
+C35      100n               C-EU025-024X044  C025-024X044              rcl                                5
+C36      10µ                CPOL-EUE2,5-6E   E2,5-6E                   rcl                                5
+D1       BAT43              DS_E2L           E2LINE                    zetex                              2
+D2       BAT43              DS_E2L           E2LINE                    zetex                              2
+G1       CR2032VKZH         CR2032VKZH       KZH20PCB-V                battery                            2
+IC1      ATMEGA 328-PU      MEGA48/88/168-PU DIL28-3                   avr-7                              1
+IC2      74HC00N            74HC00N          DIL14                     74xx-eu                            1
+IC3      74HC574N           74HC574N         DIL20                     74xx-eu                            1
+IC4      74HC574N           74HC574N         DIL20                     74xx-eu                            1
+IC5      AS6C4008           HM628512A_DIL32  DIL32                     hitachi_sram_hm628512a-series_rev1 1
+IC6      PCF8583P           PCF8583P         DIL08                     i2c_new                            2
+IC7      MAX3222            MAX3222          DIL18                     maxim                              2
+IC8      SC16IS740          RICKK2_SC16IS740 RICKK2_SC16IS740          SC16IS740v4                        2
+IC9      PCF8574P           PCF8574P         DIL16                     i2c_new                            2
+IC10     PCA9517            PCA9517          SO-08                     PCA9517                            3
+IC11     FT232RL            FT232RL          SSOP28                    ftdichip                           4
+IC12     LP2950CDT-3.3      LP2950CDT-3.3    DPACK                     v-reg                              4
+IC13     P8X32A-D40         P8X32A-D40       DIL40                     p8x32a_11                          5
+IC14     24LC256P           24LC256P         DIL8                      microchip                          5
+J1       Würth 693063010911 693063010911     693063010911              InputOutputIO (rev18a)             1
+JP1      RI-Power           PINHD-1X2        1X02                      pinhead                            2
+LED1     Grün               LEDCHIPLED_0603  CHIPLED_0603              led                                1
+LED2     Gelb               LEDCHIPLED_0603  CHIPLED_0603              led                                1
+LED3     Rot                LEDCHIPLED_0603  CHIPLED_0603              led                                4
+LED4     Grün               LEDCHIPLED_0603  CHIPLED_0603              led                                4
+Q1       20 MHz             CRYSTALHC49S     HC49/S                    crystal                            1
+Q2       32.768 kHz         CRYSTALTC26H     TC26H                     crystal                            2
+Q3       14.7456MHz         CRYSTAL5X3       CRYSTAL-SMD-5X3           SparkFun                           2
+Q4       BC817-25SMD        BC817-25SMD      SOT23-BEC                 transistor-npn                     5
+Q5       5 MHz              CRYSTALHC49S     HC49/S                    crystal                            5
+R1       330                R-EU_0204/2V     0204V                     rcl                                1
+R2       10k                R-EU_0204/2V     0204V                     rcl                                1
+R3       10k                R-EU_0204/2V     0204V                     rcl                                1
+R4       330                R-EU_0204/2V     0204V                     rcl                                1
+R5       10k                R-EU_0204/2V     0204V                     rcl                                2
+R6       1k                 R-EU_R0805       R0805                     rcl                                2
+R7       1M                 R-EU_R0805       R0805                     rcl                                2
+R8       1k                 R-EU_R0805       R0805                     rcl                                2
+R9       10k                R-EU_0207/2V     0207/2V                   rcl                                3
+R10      10k                R-EU_0207/2V     0207/2V                   rcl                                3
+R11      10k                R-EU_0207/2V     0207/2V                   rcl                                3
+R12      10k                R-EU_0207/2V     0207/2V                   rcl                                3
+R13      10k                R-EU_0204/2V     0204V                     rcl                                4
+R14      390                R-EU_0204/2V     0204V                     rcl                                4
+R15      220                R-EU_0204/2V     0204V                     rcl                                4
+R16      150                R-EU_0204/2V     0204V                     rcl                                5
+R17      150                R-EU_0204/2V     0204V                     rcl                                5
+R18      270                R-EU_0204/2V     0204V                     rcl                                5
+R19      270                R-EU_0204/2V     0204V                     rcl                                5
+R20      10k                R-EU_0204/2V     0204V                     rcl                                5
+R21      240                R-EU_0204/2V     0204V                     rcl                                5
+R22      470                R-EU_0204/2V     0204V                     rcl                                5
+R23      240                R-EU_0204/2V     0204V                     rcl                                5
+R24      470                R-EU_0204/2V     0204V                     rcl                                5
+R25      240                R-EU_0204/2V     0204V                     rcl                                5
+R26      470                R-EU_0204/2V     0204V                     rcl                                5
+R27      240                R-EU_0204/2V     0204V                     rcl                                5
+R28      240                R-EU_0204/2V     0204V                     rcl                                5
+R29      10k                R-EU_0204/7      0204/7                    rcl                                5
+R30      10k                R-EU_0204/7      0204/7                    rcl                                5
+R31      100                R-EU_0204/2V     0204V                     rcl                                5
+R32      100                R-EU_0204/2V     0204V                     rcl                                5
+R33      10k                R-EU_0204/2V     0204V                     rcl                                5
+R34      10k                R-EU_0204/2V     0204V                     rcl                                5
+S1       CP/M Reset         31-XX            B3F-31XX                  switch-omron                       1
+S2       VT100 Reset        31-XX            B3F-31XX                  switch-omron                       5
+SP1      RMP-14SP           KSS1201          KSS1201                   buzzer                             5
+SV1      ISP                ML6              ML6                       con-harting-ml                     1
+SV2      GPIO 3.3V Port     ML10L            ML10L                     con-harting-ml                     2
+SV3      I2C Bus            ML10L            ML10L                     con-harting-ml                     3
+SW1      Mode Switch        SW_DIP-6         EDG-06                    special                            4
+SW2      Mode Switch        SW_DIP-3         EDG-03                    special                            4
+U1       MCP23017-E/SP      MCP23017-E/SP    DIP793W45P254L3556H508Q28 I2C_AMESYS                         3
+X1       DE9 Male           M09HP            M09HP                     con-subd                           2
+X2       DE25 Female        F25H             F25H                      con-subd                           3
+X3       USB-B              PN61729-S        PN61729-S                 con-berg                           4
+X4       PG203J             PG203J           PG203J                    con-hirschmann                     5
+X5       DB-15 female       HF15H            HDF15H                    con-subd                           5
+X6       Mini-DIN 6 pol     MDSSV-BC06       SSV-BC06                  con-yamaichi                       5

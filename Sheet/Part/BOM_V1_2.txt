@@ -1,0 +1,116 @@
+Stückliste exportiert aus B:/Projekte/02 AVR CPM/Sheet/Aeternum_V1_2.sch am 07.03.2019 10:08
+
+Part Value              Device           Package                   Description                                                                                                   
+C1   10µ                CPOL-EUE2-5      E2-5                      POLARIZED CAPACITOR, European symbol                                                                          
+C2   100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C3   27p                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C4   27p                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C5   100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C6   100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C7   4,7µ               CPOL-EUE2-5      E2-5                      POLARIZED CAPACITOR, European symbol                                                                          
+C8   100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C9   100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C10  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C11  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C12  6-20 pF            C-TRIMMTZ03      CTRIMTZ03                 Trimm capacitor                                                                                               
+C13  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C14  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C15  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C16  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C17  18pF               CAP0603-CAP      0603-CAP                  Capacitor                                                                                                     
+C18  18pF               CAP0603-CAP      0603-CAP                  Capacitor                                                                                                     
+C19  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C20  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C21  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C22  10n                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C23  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C24  10µ                CPOL-EUE2-5      E2-5                      POLARIZED CAPACITOR, European symbol                                                                          
+C25  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C26  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C27  10µ                CPOL-EUE2-5      E2-5                      POLARIZED CAPACITOR, European symbol                                                                          
+C28  10µ                CPOL-EUE2-5      E2-5                      POLARIZED CAPACITOR, European symbol                                                                          
+C29  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C30  10µ                CPOL-EUE2.5-5    E2,5-5                    POLARIZED CAPACITOR, European symbol                                                                          
+C31  10µ                CPOL-EUE2.5-5    E2,5-5                    POLARIZED CAPACITOR, European symbol                                                                          
+C32  33n                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C33  10n                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C34  33n                C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C35  100n               C-EU025-024X044  C025-024X044              CAPACITOR, European symbol                                                                                    
+C36  10µ                CPOL-EUE2,5-6E   E2,5-6E                   POLARIZED CAPACITOR, European symbol                                                                          
+D1   BAT43              DS_E2L           E2LINE                    SHOTTKY DIODE                                                                                                 
+D2   BAT43              DS_E2L           E2LINE                    SHOTTKY DIODE                                                                                                 
+G1   CR2032VKZH         CR2032VKZH       KZH20PCB-V                LI BATTERY Varta                                                                                              
+IC1  ATMEGA 328-PU      MEGA48/88/168-PU DIL28-3                                                                                                                                 
+IC2  74HC00N            74HC00N          DIL14                     Quad 2-input NAND gate                                                                                        
+IC3  74HC574N           74HC574N         DIL20                     8-bit D type FLIP FLOP bus driver                                                                             
+IC4  74HC574N           74HC574N         DIL20                     8-bit D type FLIP FLOP bus driver                                                                             
+IC5  AS6C4008           HM628512A_DIL32  DIL32                     4M SRAM 512kword x 8bit                                                                                       
+IC6  PCF8583P           PCF8583P         DIL08                     Clock/calendar with 240 x 8-bit RAM                                                                           
+IC7  MAX3222            MAX3222          DIL18                     RS232 TRANSCEIVER                                                                                             
+IC8  SC16IS740          RICKK2_SC16IS740 RICKK2_SC16IS740                                                                                                                        
+IC9  PCF8574P           PCF8574P         DIL16                     Remote 8-Bit I/O Expander for I²C Bus                                                                         
+IC10 PCA9517            PCA9517          SO-08                                                                                                                                   
+IC11 FT232RL            FT232RL          SSOP28                    Source: http://www.ftdichip.com/Documents/DataSheets/DS_FT232R_v104.pdf                                       
+IC12 LP2950CDT-3.3      LP2950CDT-3.3    DPACK                     Source: http://cache.national.com/ds/LP/LP2950.pdf                                                            
+IC13 P8X32A-D40         P8X32A-D40       DIL40                     8-Cog Multiprocessor Microcontroller                                                                          
+IC14 24LC256P           24LC256P         DIL8                      Serial EEPROM                                                                                                 
+J1   Würth 693063010911 693063010911     693063010911              WR-CRD SD CARD CONNECTOR PUSH & PULL WITH CARD DETECTION 9PINS=>Code : Con_I-O_COM_CRD_SD_Normal_693063010911 
+JP1  RI-Power           PINHD-1X2        1X02                      PIN HEADER                                                                                                    
+LED1 Grün               LEDCHIPLED_0603  CHIPLED_0603              LED                                                                                                           
+LED2 Gelb               LEDCHIPLED_0603  CHIPLED_0603              LED                                                                                                           
+LED3 Rot                LEDCHIPLED_0603  CHIPLED_0603              LED                                                                                                           
+LED4 Grün               LEDCHIPLED_0603  CHIPLED_0603              LED                                                                                                           
+Q1   20 MHz             CRYSTALHC49S     HC49/S                    CRYSTAL                                                                                                       
+Q2   32.768 kHz         CRYSTALTC26H     TC26H                     CRYSTAL                                                                                                       
+Q3   14.7456MHz         CRYSTAL5X3       CRYSTAL-SMD-5X3           Crystals                                                                                                      
+Q4   BC817-25SMD        BC817-25SMD      SOT23-BEC                 NPN Transistor                                                                                                
+Q5   5 MHz              CRYSTALHC49S     HC49/S                    CRYSTAL                                                                                                       
+R1   270                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R2   10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R3   10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R4   330                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R5   10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R6   1k                 R-EU_R0805       R0805                     RESISTOR, European symbol                                                                                     
+R7   1M                 R-EU_R0805       R0805                     RESISTOR, European symbol                                                                                     
+R8   1k                 R-EU_R0805       R0805                     RESISTOR, European symbol                                                                                     
+R9   10k                R-EU_0207/2V     0207/2V                   RESISTOR, European symbol                                                                                     
+R10  10k                R-EU_0207/2V     0207/2V                   RESISTOR, European symbol                                                                                     
+R11  10k                R-EU_0207/2V     0207/2V                   RESISTOR, European symbol                                                                                     
+R12  10k                R-EU_0207/2V     0207/2V                   RESISTOR, European symbol                                                                                     
+R13  10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R14  390                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R15  270                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R16  150                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R17  150                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R18  270                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R19  270                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R20  10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R21  240                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R22  470                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R23  240                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R24  470                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R25  240                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R26  470                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R27  240                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R28  240                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R29  10k                R-EU_0204/7      0204/7                    RESISTOR, European symbol                                                                                     
+R30  10k                R-EU_0204/7      0204/7                    RESISTOR, European symbol                                                                                     
+R31  100                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R32  100                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R33  10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+R34  10k                R-EU_0204/2V     0204V                     RESISTOR, European symbol                                                                                     
+S1   CP/M Reset         31-XX            B3F-31XX                  OMRON SWITCH                                                                                                  
+S2   VT100 Reset        31-XX            B3F-31XX                  OMRON SWITCH                                                                                                  
+SP1  RMP-14SP           KSS1201          KSS1201                   SPEAKER                                                                                                       
+SV1  ISP                ML6              ML6                       HARTING                                                                                                       
+SV2  GPIO 3.3V Port     ML10L            ML10L                     HARTING                                                                                                       
+SV3  I2C Bus            ML10L            ML10L                     HARTING                                                                                                       
+SW1  Mode Switch        SW_DIP-6         EDG-06                    DIP SWITCH                                                                                                    
+SW2  Mode Switch        SW_DIP-3         EDG-03                    DIP SWITCH                                                                                                    
+U1   MCP23017-E/SP      MCP23017-E/SP    DIP793W45P254L3556H508Q28 IC I/O EXPANDER I2C 16B 28SDIP                                                                                
+X1   DE9 Male           M09HP            M09HP                     SUB-D                                                                                                         
+X2   DE25 Female        F25H             F25H                      SUB-D                                                                                                         
+X3   USB-B              PN61729-S        PN61729-S                 BERG USB connector                                                                                            
+X4   PG203J             PG203J           PG203J                    MIC/HEADPHONE JACK                                                                                            
+X5   DB-15 female       HF15H            HDF15H                    SUB-D                                                                                                         
+X6   Mini-DIN 6 pol     MDSSV-BC06       SSV-BC06                  YAMAICHI CONNECTOR                                                                                            
